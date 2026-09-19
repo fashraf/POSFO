@@ -1,0 +1,187 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light — the default. */
+    --ink-50: 247 248 249;
+    --ink-100: 239 241 243;
+    --ink-200: 227 230 234;
+    --ink-300: 203 209 216;
+    --ink-400: 154 164 176;
+    --ink-500: 107 118 131;
+    --ink-600: 75 85 97;
+    --ink-700: 52 60 70;
+    --ink-800: 34 40 47;
+    --ink-900: 20 24 29;
+    --surface: 255 255 255;
+
+    --header-height: 3.5rem;
+    --sidebar-width: 15.5rem;
+    --sidebar-width-collapsed: 4rem;
+  }
+
+  /* Dark — the scale inverts, so `text-ink-900` stays "the strongest text"
+     and `bg-ink-50` stays "the page behind the cards". Components need no
+     changes because the names still mean the same thing. */
+  [data-theme='dark'] {
+    --ink-50: 18 21 26;
+    --ink-100: 30 35 42;
+    --ink-200: 44 51 60;
+    --ink-300: 68 78 90;
+    --ink-400: 122 133 146;
+    --ink-500: 152 162 174;
+    --ink-600: 186 194 203;
+    --ink-700: 213 219 226;
+    --ink-800: 233 237 241;
+    --ink-900: 246 248 250;
+    --surface: 26 30 37;
+
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-ink-200;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-ink-50 text-base text-ink-800 antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'ss01';
+    margin: 0;
+  }
+
+  /* Arabic gets its own face and slightly looser leading — it needs the room. */
+  html[lang='ar'] body {
+    @apply font-arabic;
+    line-height: 1.7;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-semibold text-ink-900;
+    text-wrap: balance;
+  }
+
+  /* Tabular figures everywhere numbers are compared in a column. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+
+  /* Latin numerals stay LTR even inside an Arabic RTL paragraph. */
+  .numeric {
+    direction: ltr;
+    unicode-bidi: isolate;
+    font-variant-numeric: tabular-nums;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-500/45 ring-offset-2 ring-offset-ink-50;
+  }
+
+  ::placeholder {
+    @apply text-ink-400;
+  }
+
+  ::selection {
+    @apply bg-brand-100 text-brand-800;
+  }
+
+  /* Scrollbars: present but quiet. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.ink.300') transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    @apply rounded-full border-[3px] border-solid border-transparent bg-ink-300 bg-clip-content;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-400;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* Shared surface treatment: white card, hairline border, whisper of a shadow. */
+  .surface {
+    @apply rounded-lg border border-ink-200 bg-surface shadow-xs;
+  }
+
+  /* Dotted rules separate a ledger or receipt into sections without the hard
+     line of a solid border. Used in statements, movement history, and totals. */
+  .rule-dotted {
+    @apply border-0 border-t border-dashed border-ink-300;
+  }
+
+  .divide-dotted-y > * + * {
+    @apply border-0 border-t border-dashed border-ink-200;
+  }
+
+  /* Skeleton shimmer used by the loading states. */
+  .skeleton {
+    @apply relative overflow-hidden rounded bg-ink-100;
+  }
+
+  .skeleton::after {
+    @apply absolute inset-0 -translate-x-full;
+    content: '';
+    background-image: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0) 0,
+      rgba(255, 255, 255, 0.65) 50%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    animation: shimmer 1.6s infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton::after {
+      display: none;
+    }
+  }
+}
+
+@layer utilities {
+  /* Mirror an icon that encodes direction (chevrons, arrows) when the page is RTL. */
+  [dir='rtl'] .flip-rtl {
+    transform: scaleX(-1);
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
