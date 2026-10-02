@@ -80,6 +80,13 @@ export interface Purchase extends Timestamped {
   totalH: number;
   /** True when paid on delivery; false means it sits on the vendor balance. */
   paidOnReceipt: boolean;
+  /** Settled so far — the whole total when paid on receipt. */
+  paidH: number;
+  outstandingH: number;
+  paymentStatus: 'paid' | 'partial' | 'unpaid';
+  vendorNameAr: string;
+  vendorNameEn: string;
+  branchId: ID | null;
   status: PurchaseStatus;
   note: string;
   receivedBy: string;
@@ -95,6 +102,11 @@ export interface VendorPayment extends Timestamped {
   note: string;
   paidBy: string;
   paidAt: string;
+  branchId: ID | null;
+  /** The journal entry the payment posted. */
+  entryId: ID | null;
+  /** Which purchases it settled, oldest first. */
+  allocations: { purchaseId: ID; reference: string; amountH: number }[];
 }
 
 export type VendorLedgerKind = 'purchase' | 'payment';
@@ -109,22 +121,11 @@ export interface VendorLedgerEntry {
   reference: string;
   date: string;
   amountH: number;
+  /** Running balance after this line, as the server computed it. */
   balanceH: number;
-}
-
-export function buildVendorLedger(
-  entries: Omit<VendorLedgerEntry, 'balanceH'>[],
-  openingH = 0,
-): VendorLedgerEntry[] {
-  const ordered = [...entries].sort(
-    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
-  );
-
-  let running = openingH;
-  return ordered.map((entry) => {
-    running += entry.amountH;
-    return { ...entry, balanceH: running };
-  });
+  method: string | null;
+  vendorInvoiceNumber: string | null;
+  note: string | null;
 }
 
 /** Totals for a purchase. Supplier prices are quoted net, so VAT is added on. */

@@ -17,6 +17,13 @@ export interface AuthSession {
   /** Where to land after sign-in. Follows from the role. */
   landingPath: string;
   issuedAt: string;
+  /**
+   * What the server granted this user, from the token. Present when signed in
+   * through the API.
+   */
+  permissions?: string[];
+  /** Branches the server lets this user work in. */
+  branchIds?: ID[];
 }
 
 /** A pending verification, held between the identifier step and the OTP step. */

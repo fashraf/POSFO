@@ -77,6 +77,16 @@ interface FormState {
   taxStartDate: string;
 }
 
+/* Which wizard step holds each field, so a server refusal can reopen it. */
+const OWNER_FIELDS: string[] = ['firstName', 'lastName', 'email', 'mobile', 'password', 'confirmPassword'];
+const TAX_FIELDS: string[] = ['isVatRegistered', 'crNumber', 'vatNumber', 'taxStartDate'];
+
+/* The API names business fields without the wizard's prefix. */
+const SERVER_FIELD: Record<string, keyof FormState> = {
+  nameEn: 'businessNameEn',
+  nameAr: 'businessNameAr',
+};
+
 const EMPTY: FormState = {
   firstName: '',
   lastName: '',
@@ -166,7 +176,7 @@ export default function Register() {
         errors.crNumber = t('auth.register.errors.crInvalid');
 
       if (!form.vatNumber.trim()) errors.vatNumber = t('auth.register.errors.vatNumber');
-      else if (!/^\d{15}$/.test(form.vatNumber.trim()))
+      else if (!/^3\d{13}3$/.test(form.vatNumber.trim()))
         errors.vatNumber = t('auth.register.errors.vatInvalid');
 
       if (!form.taxStartDate) errors.taxStartDate = t('auth.register.errors.taxStartDate');
@@ -226,17 +236,33 @@ export default function Register() {
       navigate('/register/verify');
     } catch (caught) {
       const failure = caught as { fieldErrors?: Record<string, string[]>; message?: string };
-      if (failure.fieldErrors) {
+      const entries = Object.entries(failure.fieldErrors ?? {})
+        .filter(([, messages]) => messages.length > 0)
+        /* The API prefixes some keys with their section ("owner.email"). */
+        .map(([field, messages]) => {
+          const key = field.split('.').pop() ?? field;
+          return [SERVER_FIELD[key] ?? key, messages[0]] as const;
+        });
+
+      if (entries.length > 0) {
+        /* A single refusal (email or mobile taken, bad VAT) carries the
+           message in the reader's language; prefer it over the field text. */
         setServerErrors(
           Object.fromEntries(
-            Object.entries(failure.fieldErrors)
-              .filter(([, messages]) => messages.length > 0)
-              .map(([field, messages]) => [field, messages[0]]),
+            entries.length === 1 && failure.message
+              ? [[entries[0][0], failure.message]]
+              : entries,
           ),
         );
+
         /* Send them back to the step that holds the problem. */
-        setStep(0);
-        setTouched((current) => ({ ...current, email: true }));
+        const field = entries[0][0];
+        setStep(OWNER_FIELDS.includes(field) ? 0 : TAX_FIELDS.includes(field) ? 2 : 1);
+        setTouched((current) => ({ ...current, [field]: true }));
+      } else {
+        /* No field to point at: show it on the review step rather than
+           failing silently. */
+        setServerErrors({ form: failure.message ?? t('auth.register.failed') });
       }
     } finally {
       setSubmitting(false);

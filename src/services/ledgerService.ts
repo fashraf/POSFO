@@ -1,54 +1,15 @@
-import { USE_MOCKS } from '@/config/env';
-import { financeApi } from './api';
-import { toJournalEntry } from './mappers/saleMappers';
-import type { JournalEntry, JournalLine, TransactionKind } from '@/types/finance';
-import { ACCOUNTS, accountBalanceH, reverseLines, validateEntry } from '@/types/finance';
-import { HttpError } from './http';
-import { delay, inBranch, nextId, notFound, timestamp } from './mock/store';
+import { financeApi, reversalApi, type FinanceSummary } from './api';
+import type { FinanceFigures } from './api/salesApi';
+import { num, str, toJournalEntry } from './mappers/saleMappers';
+import { invalidate } from './dataVersion';
+import type { JournalEntry, TransactionKind } from '@/types/finance';
 
 /**
  * The ledger.
  *
- * Every financial event in the application posts through `post()`. Nothing
- * else writes entries, which is why the balance rule can be enforced in one
- * place rather than trusted to each caller.
+ * Reads come from the API, which posts every entry inside the procedure that
+ * caused it — the balance rule is enforced there, in the database.
  */
-
-let entries: JournalEntry[] = [];
-let sequence = 1000;
-
-/* History is posted lazily on first read, so the seed itself can use `post()`
-   and go through the same balance checks as everything else. */
-let historyReady: Promise<void> | null = null;
-
-async function ensureHistory(): Promise<void> {
-  if (!historyReady) {
-    historyReady = import('./mock/financeSeed').then((module) =>
-      module.seedFinanceHistory(),
-    );
-  }
-  await historyReady;
-}
-
-export interface PostInput {
-  kind: TransactionKind;
-  sourceReference: string;
-  description: string;
-  lines: JournalLine[];
-  actor: string;
-  branchId?: string | null;
-  /** Defaults to now. Set it to backdate an opening balance. */
-  postedAt?: string;
-}
-
-/** Shorthand so callers read like an accountant would write it. */
-export function debit(accountCode: string, amountH: number, memo = ''): JournalLine {
-  return { accountCode, debitH: amountH, creditH: 0, memo };
-}
-
-export function credit(accountCode: string, amountH: number, memo = ''): JournalLine {
-  return { accountCode, debitH: 0, creditH: amountH, memo };
-}
 
 export interface LedgerQuery {
   from?: string;
@@ -60,43 +21,22 @@ export interface LedgerQuery {
 }
 
 export const ledgerService = {
-  /** Post a balanced entry. Refuses anything that does not balance. */
-  async post(input: PostInput): Promise<JournalEntry> {
-    /* Zero-amount lines are dropped rather than rejected: a sale with no
-       discount legitimately produces one, and forcing every caller to filter
-       first just moves the same code around. */
-    const lines = input.lines.filter((line) => line.debitH > 0 || line.creditH > 0);
-
-    const problem = validateEntry(lines);
-    if (problem) {
-      throw new HttpError({
-        status: 422,
-        code: 'unbalanced_entry',
-        message: problem,
-      });
-    }
-
-    sequence += 1;
-    const now = timestamp();
-
-    const entry: JournalEntry = {
-      id: nextId('jrn'),
-      reference: `JE-${sequence}`,
-      kind: input.kind,
-      sourceReference: input.sourceReference,
-      description: input.description,
-      postedAt: input.postedAt ?? now,
-      lines,
-      actor: input.actor,
-      branchId: input.branchId ?? null,
-      reversesEntryId: null,
-      reversedByEntryId: null,
-      createdAt: now,
-      updatedAt: now,
+  /**
+   * One entry with its lines — the debits and credits behind the totals —
+   * and, when it was reversed, why.
+   */
+  async get(entryId: string): Promise<JournalEntry & { reversalReason: string | null }> {
+    const row = await financeApi.entry(entryId);
+    return {
+      ...toJournalEntry(row as unknown as Record<string, unknown>),
+      lines: (row.lines ?? []).map((line) => ({
+        accountCode: line.accountCode,
+        debitH: line.debitH,
+        creditH: line.creditH,
+        memo: line.memo ?? '',
+      })),
+      reversalReason: row.reversalReason ?? null,
     };
-
-    entries = [entry, ...entries];
-    return entry;
   },
 
   /**
@@ -104,156 +44,126 @@ export const ledgerService = {
    *
    * Corrections are made by posting the opposite, never by editing or removing
    * the original — an audit trail with a hole in it is not an audit trail.
+   * Resolves to the id of the reversing entry.
    */
-  async reverse(entryId: string, reason: string, actor: string): Promise<JournalEntry> {
-    await delay(300);
-
-    const original = entries.find((entry) => entry.id === entryId);
-    if (!original) throw notFound('Journal entry', entryId);
-
-    if (original.reversedByEntryId) {
-      throw new HttpError({
-        status: 409,
-        code: 'already_reversed',
-        message: 'This entry has already been reversed.',
-      });
-    }
-
-    if (!reason.trim()) {
-      throw new HttpError({
-        status: 422,
-        code: 'reason_required',
-        message: 'A reversal needs a reason on the record.',
-        fieldErrors: { reason: ['Explain why this entry is being reversed.'] },
-      });
-    }
-
-    sequence += 1;
-    const now = timestamp();
-
-    const reversal: JournalEntry = {
-      id: nextId('jrn'),
-      reference: `JE-${sequence}`,
-      kind: original.kind,
-      sourceReference: original.sourceReference,
-      description: `Reversal of ${original.reference} — ${reason.trim()}`,
-      postedAt: now,
-      lines: reverseLines(original.lines),
-      actor,
-      branchId: original.branchId,
-      reversesEntryId: original.id,
-      reversedByEntryId: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    entries = [
-      reversal,
-      ...entries.map((entry) =>
-        entry.id === entryId ? { ...entry, reversedByEntryId: reversal.id, updatedAt: now } : entry,
-      ),
-    ];
-
-    return reversal;
+  async reverse(entryId: string, reason: string, _actor?: string): Promise<string> {
+    /* The server records the actor from the session; the parameter stays so
+       callers need not change. */
+    const reversed = await reversalApi.ledgerEntry(entryId, reason);
+    invalidate('ledger');
+    return reversed.entryId;
   },
 
   async list(query: LedgerQuery = {}): Promise<JournalEntry[]> {
-    if (!USE_MOCKS) {
-      /* Filtering happens in SQL, where the indexes are. Pulling everything
-         and filtering here would work at seed scale and fall over at a year
-         of real trading. */
-      const page = await financeApi.ledger({
-        branchId: query.branchId ?? undefined,
-        kind: query.kind ?? undefined,
-        from: query.from,
-        to: query.to,
-        pageSize: 200,
-      });
-
-      return page.items.map(toJournalEntry);
-    }
-
-    await delay(200);
-    await ensureHistory();
-
-    return entries.filter((entry) => {
-      if (query.from && entry.postedAt < query.from) return false;
-      if (query.to && entry.postedAt > `${query.to}T23:59:59.999Z`) return false;
-      if (query.kind && entry.kind !== query.kind) return false;
-      if (!inBranch(entry.branchId, query.branchId)) return false;
-
-      if (query.accountCode) {
-        if (!entry.lines.some((line) => line.accountCode === query.accountCode)) return false;
-      }
-
-      if (query.search) {
-        const needle = query.search.trim().toLocaleLowerCase();
-        const haystack =
-          `${entry.reference} ${entry.sourceReference} ${entry.description}`.toLocaleLowerCase();
-        if (!haystack.includes(needle)) return false;
-      }
-
-      return true;
+    /* Filtering happens in SQL, where the indexes are. Pulling everything
+       and filtering here would work at seed scale and fall over at a year
+       of real trading. The route caps a page at 200. */
+    const page = await financeApi.ledger({
+      branchId: query.branchId ?? undefined,
+      accountCode: query.accountCode ?? undefined,
+      kind: query.kind ?? undefined,
+      search: query.search?.trim() || undefined,
+      from: query.from,
+      to: query.to,
+      pageSize: 200,
     });
-  },
 
-  async get(id: string): Promise<JournalEntry> {
-    await delay(120);
-    const entry = entries.find((candidate) => candidate.id === id);
-    if (!entry) throw notFound('Journal entry', id);
-    return entry;
+    return page.items.map(toJournalEntry);
   },
 
   /** Balance of one account, in its natural direction. */
   async balance(accountCode: string): Promise<number> {
-    await delay(100);
-    await ensureHistory();
-    return accountBalanceH(entries, accountCode);
+    const rows = await financeApi.accounts();
+    const row = rows.find((candidate) => str(candidate.accountCode) === accountCode);
+    return row ? num(row.balanceH) : 0;
   },
 
-  /** Balances for every account that has movement. */
+  /**
+   * Debit and credit totals for every account that has movement.
+   *
+   * Business-wide: the balance view is not branch-scoped, and a trial balance
+   * that only covered one branch would not be expected to balance anyway.
+   */
   async trialBalance(): Promise<{ code: string; debitH: number; creditH: number }[]> {
-    await delay(200);
-    await ensureHistory();
+    const rows = await financeApi.accounts();
 
-    const totals = new Map<string, { debitH: number; creditH: number }>();
-
-    for (const entry of entries) {
-      for (const line of entry.lines) {
-        const current = totals.get(line.accountCode) ?? { debitH: 0, creditH: 0 };
-        current.debitH += line.debitH;
-        current.creditH += line.creditH;
-        totals.set(line.accountCode, current);
-      }
-    }
-
-    return Array.from(totals.entries())
-      .map(([code, value]) => ({ code, ...value }))
+    return rows
+      .map((row) => ({
+        code: str(row.accountCode),
+        debitH: num(row.totalDebitH),
+        creditH: num(row.totalCreditH),
+      }))
+      .filter((row) => row.debitH !== 0 || row.creditH !== 0)
       .sort((a, b) => a.code.localeCompare(b.code));
   },
 
   /** Every account balance at once, for the money screens. */
   async balances(): Promise<Record<string, number>> {
-    await delay(160);
-    await ensureHistory();
-
-    return Object.fromEntries(
-      Object.keys(ACCOUNTS).map((code) => [code, accountBalanceH(entries, code)]),
-    );
+    const rows = await financeApi.accounts();
+    return Object.fromEntries(rows.map((row) => [str(row.accountCode), num(row.balanceH)]));
   },
 
-  /** Movement on an account within a window, for cash reconciliation. */
-  async movement(accountCode: string, from: string, to: string): Promise<number> {
-    const window = entries.filter(
-      (entry) => entry.postedAt >= from && entry.postedAt <= `${to}T23:59:59.999Z`,
-    );
-    return accountBalanceH(window, accountCode);
+  /**
+   * The month's headline figures, computed from the ledger on the server.
+   *
+   * With a branch, the top-level figures are that branch's own entries only;
+   * entries tagged to no branch arrive separately as `businessWide`. Revenue is
+   * net of returns, which are also given on their own as `returnsH`.
+   */
+  async monthSummary(month: string, branchId?: string | null): Promise<FinanceSummary> {
+    const row = await financeApi.summary({ branchId: branchId ?? undefined, month });
+
+    return {
+      ...toFigures(row),
+      paymentMix: {
+        cashH: num(row.paymentMix?.cashH),
+        cardH: num(row.paymentMix?.cardH),
+        creditH: num(row.paymentMix?.creditH),
+        bankH: num(row.paymentMix?.bankH),
+        totalH: num(row.paymentMix?.totalH),
+        saleCount: num(row.paymentMix?.saleCount),
+      },
+      refunds: {
+        cashH: num(row.refunds?.cashH),
+        cardH: num(row.refunds?.cardH),
+        creditH: num(row.refunds?.creditH),
+        bankH: num(row.refunds?.bankH),
+        totalH: num(row.refunds?.totalH),
+        noteCount: num(row.refunds?.noteCount),
+      },
+      businessWide: row.businessWide ? toFigures(row.businessWide) : null,
+    };
   },
 
-  /** Everything posted, optionally scoped to one branch. */
-  async all(branchId?: string | null): Promise<JournalEntry[]> {
-    await delay(160);
-    await ensureHistory();
-    return entries.filter((entry) => inBranch(entry.branchId, branchId));
+  /** Several months at once, in the order asked for. */
+  async monthSummaries(
+    months: string[],
+    branchId?: string | null,
+  ): Promise<(FinanceSummary & { month: string })[]> {
+    const summaries = await Promise.all(
+      months.map((month) => ledgerService.monthSummary(month, branchId)),
+    );
+    return summaries.map((summary, index) => ({ ...summary, month: months[index] }));
   },
 };
+
+function toFigures(row: Partial<FinanceFigures>): FinanceFigures {
+  return {
+    revenueH: num(row.revenueH),
+    returnsH: num(row.returnsH),
+    cogsH: num(row.cogsH),
+    expensesH: num(row.expensesH),
+    expensesByAccount: (row.expensesByAccount ?? []).map((account) => ({
+      accountCode: str(account.accountCode),
+      nameAr: str(account.nameAr),
+      nameEn: str(account.nameEn),
+      name: str(account.name),
+      amountH: num(account.amountH),
+    })),
+    cashH: num(row.cashH),
+    receivableH: num(row.receivableH),
+    payableH: num(row.payableH),
+    prepaidH: num(row.prepaidH),
+    cardClearingH: num(row.cardClearingH),
+  };
+}

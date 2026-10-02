@@ -1,9 +1,7 @@
-import { USE_MOCKS } from '@/config/env';
 import {
   discoveryApi,
   type DiscoveredDevice,
 } from './api/discoveryApi';
-import { mockDiscoveryService } from './mock/discoveryMock';
 import { invalidate } from './dataVersion';
 
 /**
@@ -48,7 +46,7 @@ export const discoveryService = {
    * should not keep a tablet awake.
    */
   list(withinSeconds = 120): Promise<DiscoveredDevice[]> {
-    return USE_MOCKS ? mockDiscoveryService.list(withinSeconds) : discoveryApi.list(withinSeconds);
+    return discoveryApi.list(withinSeconds);
   },
 
   /**
@@ -61,8 +59,6 @@ export const discoveryService = {
     serialNumber: string,
     onProgress?: (progress: VerificationProgress) => void,
   ): Promise<VerificationOutcome> {
-    if (USE_MOCKS) return mockDiscoveryService.verify(serialNumber, onProgress);
-
     const startedAt = Date.now();
     const { challengeId } = await discoveryApi.challenge(serialNumber);
 
@@ -115,9 +111,7 @@ export const discoveryService = {
     serialNumber: string; deviceId: string; branchId: string;
     location?: string | null; deviceName: string;
   }) {
-    const result = USE_MOCKS
-      ? await mockDiscoveryService.connect(body)
-      : await discoveryApi.connect(body);
+    const result = await discoveryApi.connect(body);
 
     invalidate('devices');
     return result;

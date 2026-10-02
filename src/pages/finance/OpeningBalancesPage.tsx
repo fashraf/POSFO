@@ -20,8 +20,9 @@ import { useSession } from '@/contexts/SessionContext';
 import { useToast } from '@/contexts/ToastContext';
 import { useI18n, useTranslation } from '@/i18n';
 import { cn } from '@/lib/cn';
-import { formatDate, toMinorUnits } from '@/lib/format';
+import { formatDate, fromMinorUnits, toMinorUnits } from '@/lib/format';
 import { openingBalanceService, safeCall } from '@/services';
+import type { PostedOpeningBalances } from '@/services/payrollService';
 import { openingEquityH } from '@/types/finance';
 import type { OpeningBalances } from '@/types/finance';
 
@@ -30,12 +31,11 @@ const FIELDS = ['cash', 'bank', 'inventory', 'receivables'] as const;
 export default function OpeningBalancesPage() {
   const { t } = useTranslation();
   const { language } = useI18n();
-  const { user } = useSession();
   const toast = useToast();
+  /* Owner only on the server; others see the position but cannot post it. */
+  const canPost = useSession().can('finance.opening_balances');
 
-  const [existing, setExisting] = useState<
-    (OpeningBalances & { postedAt: string; actor: string }) | null
-  >(null);
+  const [existing, setExisting] = useState<PostedOpeningBalances | null>(null);
   const [loading, setLoading] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -50,12 +50,25 @@ export default function OpeningBalancesPage() {
   });
   const [asOf, setAsOf] = useState(new Date().toISOString().slice(0, 10));
 
-  const actor = user ? (language === 'ar' ? user.nameAr : user.nameEn) : 'System';
-
   const load = useCallback(async () => {
     setLoading(true);
     const result = await safeCall(() => openingBalanceService.get());
-    if (result.ok) setExisting(result.data);
+    if (result.ok) {
+      setExisting(result.data);
+      /* A standing posting is shown as posted — read-only, its own figures. */
+      if (result.data) {
+        const posted = result.data;
+        setValues({
+          cash: fromMinorUnits(posted.cashH),
+          bank: fromMinorUnits(posted.bankH),
+          inventory: fromMinorUnits(posted.inventoryH),
+          receivables: fromMinorUnits(posted.receivablesH),
+          payables: fromMinorUnits(posted.payablesH),
+          vat: fromMinorUnits(posted.vatH),
+        });
+        if (posted.asOf) setAsOf(posted.asOf);
+      }
+    }
     setLoading(false);
   }, []);
 
@@ -81,7 +94,7 @@ export default function OpeningBalancesPage() {
 
   async function post() {
     setBusy(true);
-    const result = await safeCall(() => openingBalanceService.post({ ...balances, actor }));
+    const result = await safeCall(() => openingBalanceService.post(balances));
     setBusy(false);
     setConfirming(false);
 
@@ -101,7 +114,7 @@ export default function OpeningBalancesPage() {
         title={t('opening.title')}
         description={t('opening.description')}
         actions={
-          !existing && (
+          !existing && canPost && (
             <Button
               leadingIcon={<Landmark />}
               onClick={() => setConfirming(true)}
@@ -144,7 +157,7 @@ export default function OpeningBalancesPage() {
                     <PriceInput
                       inputSize="sm"
                       disabled={Boolean(existing)}
-                      value={existing ? String((balances as never)[`${field}H`] ?? '') : values[field]}
+                      value={values[field]}
                       onChange={(event) =>
                         setValues((current) => ({ ...current, [field]: event.target.value }))
                       }
@@ -190,7 +203,7 @@ export default function OpeningBalancesPage() {
                 <FormField label={t('opening.asOf')} help={t('opening.asOfHelp')}>
                   <DatePicker
                 size="sm"
-                value={existing ? existing.asOf : asOf}
+                value={asOf}
                 onChange={(value) => setAsOf(value)}
                 disabled={Boolean(existing)}
                 />

@@ -20,13 +20,14 @@ import {
   TableHeaderCell,
   TableRow,
 } from '@/components/ui';
-import { CommissionBreakdown } from '@/features/finance/CommissionBreakdown';
 import { FinanceTabs } from '@/features/finance/FinanceTabs';
 import { useI18n, useTranslation } from '@/i18n';
 import { formatNumber, fromMinorUnits } from '@/lib/format';
-import { commissionService, safeCall, userService } from '@/services';
+import { commissionService, safeCall } from '@/services';
+import type { CommissionSummary } from '@/services/payrollService';
 import type { CommissionEntry } from '@/types/finance';
-import type { User } from '@/types/permissions';
+import { CommissionBreakdown } from '@/features/finance/CommissionBreakdown';
+import { useToast } from '@/contexts/ToastContext';
 
 function recentPeriods(count = 12): string[] {
   const periods: string[] = [];
@@ -59,23 +60,32 @@ export default function CommissionSummaryPage() {
   const { language } = useI18n();
   const navigate = useNavigate();
 
-  const [entries, setEntries] = useState<CommissionEntry[]>([]);
-  const [staff, setStaff] = useState<User[]>([]);
+  const [summaries, setSummaries] = useState<CommissionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<string | null>(new Date().toISOString().slice(0, 7));
-  const [detailFor, setDetailFor] = useState<Row | null>(null);
+  const toast = useToast();
+  const [breakdown, setBreakdown] = useState<{
+    name: string;
+    entries: CommissionEntry[];
+  } | null>(null);
+
+  /* The frozen sale lines behind one person's figure, for the chosen month
+     (every month when none is chosen). */
+  async function openBreakdown(row: Row) {
+    const result = await safeCall(() =>
+      commissionService.entries({ userId: row.userId, period: period ?? undefined }),
+    );
+    if (result.ok) setBreakdown({ name: row.name, entries: result.data });
+    else toast.error(result.error.message);
+  }
 
   const nameOf = <T extends { nameAr: string; nameEn: string }>(record: T) =>
     language === 'ar' ? record.nameAr : record.nameEn;
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [entryResult, staffResult] = await Promise.all([
-      safeCall(() => commissionService.list(undefined, period ?? undefined)),
-      safeCall(() => userService.list()),
-    ]);
-    if (entryResult.ok) setEntries(entryResult.data);
-    if (staffResult.ok) setStaff(staffResult.data);
+    const result = await safeCall(() => commissionService.list(undefined, period ?? undefined));
+    if (result.ok) setSummaries(result.data);
     setLoading(false);
   }, [period]);
 
@@ -83,35 +93,34 @@ export default function CommissionSummaryPage() {
     void load();
   }, [load]);
 
+  /* Paid is decided by whether a payroll run claimed the commission, not by a
+     date — the server splits it that way. A person can appear once per month,
+     so rows are folded per person in case no month is selected. */
   const rows = useMemo<Row[]>(() => {
     const byUser = new Map<string, Row>();
 
-    for (const entry of entries) {
-      const member = staff.find((candidate) => candidate.id === entry.userId);
-
+    for (const summary of summaries) {
       const current =
-        byUser.get(entry.userId) ??
+        byUser.get(summary.userId) ??
         ({
-          userId: entry.userId,
-          name: member ? nameOf(member) : entry.userId,
+          userId: summary.userId,
+          name: nameOf(summary) || summary.userId,
           sales: 0,
           earnedH: 0,
           paidH: 0,
           outstandingH: 0,
         } as Row);
 
-      current.sales += 1;
-      current.earnedH += entry.amountH;
+      current.sales += summary.saleLines;
+      current.earnedH += summary.earnedH;
+      current.paidH += summary.paidH;
+      current.outstandingH += summary.outstandingH;
 
-      /* Paid is decided by whether a payroll run claimed it, not by a date. */
-      if (entry.payrollRunId) current.paidH += entry.amountH;
-      else current.outstandingH += entry.amountH;
-
-      byUser.set(entry.userId, current);
+      byUser.set(summary.userId, current);
     }
 
     return Array.from(byUser.values()).sort((a, b) => b.earnedH - a.earnedH);
-  }, [entries, staff, language]);
+  }, [summaries, language]);
 
   const totals = rows.reduce(
     (sum, row) => ({
@@ -215,15 +224,12 @@ export default function CommissionSummaryPage() {
                 <TableHeaderCell numeric>
                   {t('commissionPage.columns.outstanding')}
                 </TableHeaderCell>
-                <TableHeaderCell align="end">
-                  <span className="sr-only">{t('common.actions')}</span>
-                </TableHeaderCell>
               </TableRow>
             </TableHead>
 
             <TableBody>
               {rows.length === 0 ? (
-                <TableEmptyRow colSpan={6}>
+                <TableEmptyRow colSpan={5}>
                   <EmptyState
                     icon={<Percent />}
                     title={t('commissionPage.empty.title')}
@@ -232,7 +238,11 @@ export default function CommissionSummaryPage() {
                 </TableEmptyRow>
               ) : (
                 rows.map((row) => (
-                  <TableRow key={row.userId}>
+                  <TableRow
+                    key={row.userId}
+                    interactive
+                    onClick={() => void openBreakdown(row)}
+                  >
                     <TableCell className="font-medium text-ink-900">{row.name}</TableCell>
 
                     <TableCell numeric className="text-ink-600">
@@ -253,12 +263,6 @@ export default function CommissionSummaryPage() {
                         className="font-semibold text-warning-700"
                       />
                     </TableCell>
-
-                    <TableCell align="end">
-                      <Button size="sm" variant="ghost" onClick={() => setDetailFor(row)}>
-                        {t('commissionPage.viewDetail')}
-                      </Button>
-                    </TableCell>
                   </TableRow>
                 ))
               )}
@@ -268,11 +272,11 @@ export default function CommissionSummaryPage() {
       )}
 
       <CommissionBreakdown
-        open={Boolean(detailFor)}
-        onClose={() => setDetailFor(null)}
-        employeeName={detailFor?.name ?? ''}
+        open={breakdown !== null}
+        onClose={() => setBreakdown(null)}
+        employeeName={breakdown?.name ?? ''}
         period={period ?? ''}
-        entries={entries.filter((entry) => entry.userId === detailFor?.userId)}
+        entries={breakdown?.entries ?? []}
       />
     </div>
   );

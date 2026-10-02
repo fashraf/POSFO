@@ -1,68 +1,64 @@
 import type { BranchSettings } from '@/types/settings';
-import { DEFAULT_BRANCH_SETTINGS } from '@/types/settings';
-import { delay, timestamp, validationFailed } from './mock/store';
+import { branchSettingsApi, type ApiBranchSettings } from './api';
+import { invalidate } from './dataVersion';
+import { utc } from './mappers/time';
 
 /**
  * Branch settings.
  *
  * Keyed by branch so switching branches switches the rules with it. A branch
- * that has never been configured falls back to the defaults rather than
- * erroring — a new branch should work on day one.
+ * that has never been configured comes back with the server's defaults rather
+ * than an error — a new branch should work on day one.
  */
-let settings: Record<string, BranchSettings> = {};
 
-function ensure(branchId: string): BranchSettings {
-  if (!settings[branchId]) {
-    const now = timestamp();
-    settings[branchId] = {
-      ...DEFAULT_BRANCH_SETTINGS,
-      branchId,
-      createdAt: now,
-      updatedAt: now,
-    };
-  }
-  return settings[branchId];
+function toSettings(row: ApiBranchSettings): BranchSettings {
+  return {
+    branchId: row.branchId,
+    defaultCustomerMode: row.defaultCustomerMode,
+    servedBy: row.servedBy,
+    allowNegativeStock: row.allowNegativeStock,
+    defaultBillTemplateId: row.defaultBillTemplateId ?? null,
+    autoPrintCustomerBill: row.autoPrintCustomerBill,
+    autoPrintGroupTickets: row.autoPrintGroupTickets,
+    vatRatePercent: row.vatRatePercent,
+    pricesIncludeVat: row.pricesIncludeVat,
+    createdAt: utc(row.createdAt),
+    updatedAt: utc(row.updatedAt),
+  };
 }
 
 export const settingsService = {
   async get(branchId: string): Promise<BranchSettings> {
-    await delay(120);
-    return ensure(branchId);
+    return toSettings(await branchSettingsApi.get(branchId));
   },
 
   async update(
     branchId: string,
     input: Omit<BranchSettings, 'branchId' | 'createdAt' | 'updatedAt'>,
   ): Promise<BranchSettings> {
-    await delay(320);
-
-    const errors: Record<string, string[]> = {};
-    if (input.vatRatePercent < 0 || input.vatRatePercent > 100) {
-      errors.vatRatePercent = ['Enter a VAT rate between 0 and 100.'];
-    }
-    if (Object.keys(errors).length > 0) throw validationFailed(errors);
-
-    const existing = ensure(branchId);
-    const updated: BranchSettings = { ...existing, ...input, updatedAt: timestamp() };
-    settings = { ...settings, [branchId]: updated };
-    return updated;
+    /* Field by field: the page spreads its whole state in here, and anything
+       extra it carries is not the server's business. */
+    const saved = await branchSettingsApi.save(branchId, {
+      defaultCustomerMode: input.defaultCustomerMode,
+      servedBy: input.servedBy,
+      allowNegativeStock: input.allowNegativeStock,
+      defaultBillTemplateId: input.defaultBillTemplateId,
+      autoPrintCustomerBill: input.autoPrintCustomerBill,
+      autoPrintGroupTickets: input.autoPrintGroupTickets,
+      vatRatePercent: input.vatRatePercent,
+      pricesIncludeVat: input.pricesIncludeVat,
+    });
+    invalidate('settings');
+    return toSettings(saved);
   },
 
-  /** Copy one branch's configuration onto another. */
+  /**
+   * Copy one branch's configuration onto another. Refused (409
+   * source_not_configured) when the source has never been saved.
+   */
   async copyFrom(sourceBranchId: string, targetBranchId: string): Promise<BranchSettings> {
-    await delay(280);
-
-    const source = ensure(sourceBranchId);
-    const target = ensure(targetBranchId);
-
-    const updated: BranchSettings = {
-      ...source,
-      branchId: targetBranchId,
-      createdAt: target.createdAt,
-      updatedAt: timestamp(),
-    };
-
-    settings = { ...settings, [targetBranchId]: updated };
-    return updated;
+    const copied = await branchSettingsApi.copy(targetBranchId, sourceBranchId);
+    invalidate('settings');
+    return toSettings(copied);
   },
 };

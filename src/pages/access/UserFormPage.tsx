@@ -137,7 +137,7 @@ export default function UserFormPage({ mode }: { mode: 'create' | 'edit' }) {
     const [roleResult, ruleResult, branchResult] = await Promise.all([
       safeCall(() => roleService.list()),
       safeCall(() => commissionService.rules()),
-      safeCall(() => branchService.list()),
+      safeCall(() => branchService.listAll()),
     ]);
 
     if (roleResult.ok) setRoles(roleResult.data);

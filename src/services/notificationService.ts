@@ -1,8 +1,12 @@
-import type { AppNotification } from '@/types/notifications';
-import { delay, timestamp } from './mock/store';
-
-const minutesAgo = (minutes: number) =>
-  new Date(Date.now() - minutes * 60 * 1000).toISOString();
+import { utc } from './mappers/time';
+import { DEFAULT_LANGUAGE, LANGUAGE_STORAGE_KEY, isLanguage } from '@/i18n/config';
+import type {
+  AppNotification,
+  NotificationKind,
+  NotificationSeverity,
+} from '@/types/notifications';
+import { notificationApi } from './api/financeApi';
+import { str } from './mappers/saleMappers';
 
 /**
  * Notifications.
@@ -11,77 +15,71 @@ const minutesAgo = (minutes: number) =>
  * a notification you cannot act on is just noise, so `href` is close to
  * mandatory in practice.
  */
-let notifications: AppNotification[] = [
-  {
-    id: 'ntf_001',
-    kind: 'low_stock',
-    severity: 'warning',
-    titleKey: 'notifications.items.lowStock',
-    values: { count: '3' },
-    href: '/inventory',
-    read: false,
-    occurredAt: minutesAgo(12),
-    createdAt: minutesAgo(12),
-    updatedAt: minutesAgo(12),
-  },
-  {
-    id: 'ntf_002',
-    kind: 'kitchen_delay',
-    severity: 'danger',
-    titleKey: 'notifications.items.kitchenDelay',
-    values: { order: 'INV-1044' },
-    href: '/kitchen',
-    read: false,
-    occurredAt: minutesAgo(4),
-    createdAt: minutesAgo(4),
-    updatedAt: minutesAgo(4),
-  },
-  {
-    id: 'ntf_003',
-    kind: 'credit_limit',
-    severity: 'warning',
-    titleKey: 'notifications.items.creditLimit',
-    values: { customer: 'Al Nukhba Est.' },
-    href: '/customers',
-    read: false,
-    occurredAt: minutesAgo(48),
-    createdAt: minutesAgo(48),
-    updatedAt: minutesAgo(48),
-  },
-  {
-    id: 'ntf_004',
-    kind: 'system',
-    severity: 'info',
-    titleKey: 'notifications.items.billSaved',
-    values: {},
-    href: '/bill-builder',
-    read: true,
-    occurredAt: minutesAgo(180),
-    createdAt: minutesAgo(180),
-    updatedAt: minutesAgo(180),
-  },
-];
+
+type Row = Record<string, unknown>;
+
+const KINDS: NotificationKind[] = ['low_stock', 'credit_limit', 'kitchen_delay', 'shift', 'system'];
+const SEVERITIES: NotificationSeverity[] = ['info', 'warning', 'danger', 'success'];
+
+/*
+ * The server stores a finished title in each language rather than a
+ * dictionary key. The bell renders `t(titleKey, values)`, and a key that is not
+ * in the dictionary renders as itself — so a bare `{title}` placeholder
+ * interpolates the stored title unchanged.
+ */
+const STORED_TITLE_KEY = '{title}';
+
+/** The language the interface is showing, read the way the provider reads it. */
+function currentLanguage(): 'ar' | 'en' {
+  try {
+    const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    return isLanguage(stored) ? stored : DEFAULT_LANGUAGE;
+  } catch {
+    return DEFAULT_LANGUAGE;
+  }
+}
+
+function iso(value: unknown): string {
+  return typeof value === 'string' ? utc(value) : '';
+}
+
+function toNotification(row: Row, language: 'ar' | 'en'): AppNotification {
+  const kind = str(row.kind) as NotificationKind;
+  const severity = str(row.severity) as NotificationSeverity;
+  const titleAr = str(row.titleAr);
+  const titleEn = str(row.titleEn);
+  const created = iso(row.createdAtUtc);
+
+  return {
+    id: str(row.notificationId),
+    /* An unknown kind would have no icon; 'system' is the neutral one. */
+    kind: KINDS.includes(kind) ? kind : 'system',
+    severity: SEVERITIES.includes(severity) ? severity : 'info',
+    titleKey: STORED_TITLE_KEY,
+    values: { title: (language === 'ar' ? titleAr : titleEn) || titleEn || titleAr },
+    href: str(row.linkPath) || null,
+    read: row.readAtUtc !== null && row.readAtUtc !== undefined,
+    occurredAt: created,
+    createdAt: created,
+    updatedAt: iso(row.readAtUtc ?? row.createdAtUtc),
+  };
+}
 
 export const notificationService = {
   async list(): Promise<AppNotification[]> {
-    await delay(140);
-    return [...notifications].sort(
-      (a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime(),
-    );
+    const rows = await notificationApi.list();
+    const language = currentLanguage();
+
+    return rows
+      .map((row) => toNotification(row, language))
+      .sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime());
   },
 
   async markRead(id: string): Promise<void> {
-    await delay(80);
-    notifications = notifications.map((entry) =>
-      entry.id === id ? { ...entry, read: true, updatedAt: timestamp() } : entry,
-    );
+    await notificationApi.markRead(id);
   },
 
   async markAllRead(): Promise<void> {
-    await delay(160);
-    const now = timestamp();
-    notifications = notifications.map((entry) =>
-      entry.read ? entry : { ...entry, read: true, updatedAt: now },
-    );
+    await notificationApi.markAllRead();
   },
 };

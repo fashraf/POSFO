@@ -32,10 +32,7 @@ import { useI18n, useTranslation } from '@/i18n';
 import { cn } from '@/lib/cn';
 import { formatCurrency, formatPercent } from '@/lib/format';
 import { ledgerService, safeCall } from '@/services';
-import { accountBalanceH, monthKey } from '@/types/finance';
-import type { JournalEntry } from '@/types/finance';
-
-const EXPENSE_ACCOUNTS = ['6000', '6100', '6200', '6300', '5200'];
+import type { FinanceSummary } from '@/services/api';
 
 interface BranchRow {
   id: string;
@@ -70,7 +67,7 @@ export default function BranchComparisonPage() {
   const { language } = useI18n();
   const { branches } = useSession();
 
-  const [entries, setEntries] = useState<JournalEntry[]>([]);
+  const [summaries, setSummaries] = useState<Record<string, FinanceSummary>>({});
   const [loading, setLoading] = useState(true);
   const [month, setMonth] = useState<string | null>(new Date().toISOString().slice(0, 7));
 
@@ -78,30 +75,37 @@ export default function BranchComparisonPage() {
     language === 'ar' ? record.nameAr : record.nameEn;
 
   const load = useCallback(async () => {
+    if (!month) return;
     setLoading(true);
-    /* Deliberately unscoped: this page exists to compare branches. */
-    const result = await safeCall(() => ledgerService.all(null));
-    if (result.ok) setEntries(result.data);
+
+    /* One summary per branch: this page exists to compare them. Each covers
+       only that branch's own entries; entries with no branch (business-wide
+       costs such as rent or payroll) come back separately, the same in every
+       summary, and are shown once rather than charged to any branch. */
+    const results = await Promise.all(
+      branches.map((branch) => safeCall(() => ledgerService.monthSummary(month, branch.id))),
+    );
+
+    const byBranch: Record<string, FinanceSummary> = {};
+    results.forEach((result, index) => {
+      if (result.ok) byBranch[branches[index].id] = result.data;
+    });
+
+    setSummaries(byBranch);
     setLoading(false);
-  }, []);
+  }, [branches, month]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const rows = useMemo<BranchRow[]>(() => {
-    const inMonth = entries.filter((entry) => monthKey(entry.postedAt) === month);
-
     const measured = branches.map((branch) => {
-      const forBranch = inMonth.filter((entry) => entry.branchId === branch.id);
+      const summary = summaries[branch.id];
 
-      const revenueH =
-        accountBalanceH(forBranch, '4100') - accountBalanceH(forBranch, '4200');
-      const cogsH = accountBalanceH(forBranch, '5100');
-      const expensesH = EXPENSE_ACCOUNTS.reduce(
-        (sum, code) => sum + accountBalanceH(forBranch, code),
-        0,
-      );
+      const revenueH = summary?.revenueH ?? 0;
+      const cogsH = summary?.cogsH ?? 0;
+      const expensesH = summary?.expensesH ?? 0;
       const profitH = revenueH - cogsH - expensesH;
 
       return {
@@ -124,13 +128,21 @@ export default function BranchComparisonPage() {
         share: totalRevenueH > 0 ? row.revenueH / totalRevenueH : 0,
       }))
       .sort((a, b) => (b.margin ?? -Infinity) - (a.margin ?? -Infinity));
-  }, [entries, branches, month, language]);
+  }, [summaries, branches, language]);
 
   const trading = rows.filter((row) => row.revenueH > 0);
   const best = trading[0];
   const worst = trading.length > 1 ? trading[trading.length - 1] : null;
 
-  const combined = rows.reduce(
+  /* Business-wide figures are identical in every branch's summary. */
+  const businessWide = Object.values(summaries).find((summary) => summary.businessWide)
+    ?.businessWide;
+  const sharedRevenueH = businessWide?.revenueH ?? 0;
+  const sharedCostH = (businessWide?.cogsH ?? 0) + (businessWide?.expensesH ?? 0);
+
+  /* The combined line is the whole business: every branch plus what belongs
+     to none of them. */
+  const branchTotals = rows.reduce(
     (sum, row) => ({
       revenueH: sum.revenueH + row.revenueH,
       expensesH: sum.expensesH + row.expensesH + row.cogsH,
@@ -138,6 +150,11 @@ export default function BranchComparisonPage() {
     }),
     { revenueH: 0, expensesH: 0, profitH: 0 },
   );
+  const combined = {
+    revenueH: branchTotals.revenueH + sharedRevenueH,
+    expensesH: branchTotals.expensesH + sharedCostH,
+    profitH: branchTotals.profitH + sharedRevenueH - sharedCostH,
+  };
 
   const chartData = rows.map((row) => ({
     label: row.name,
@@ -192,6 +209,15 @@ export default function BranchComparisonPage() {
           })}
         </Alert>
       ) : null}
+
+      {(sharedCostH !== 0 || sharedRevenueH !== 0) && (
+        <Alert tone="info" compact>
+          {t('branchCompare.businessWide', {
+            costs: formatCurrency(sharedCostH, { language }),
+            revenue: formatCurrency(sharedRevenueH, { language }),
+          })}
+        </Alert>
+      )}
 
       <div className="grid gap-3 lg:grid-cols-2">
         <div className="overflow-hidden rounded-lg border border-ink-200 bg-surface">

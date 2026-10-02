@@ -22,7 +22,8 @@ import { useI18n, useTranslation } from '@/i18n';
 import { lineGrossH, type CartTotals, type Customer, type SaleLine } from '@/types/sales';
 import type { Discount } from '@/types/discounts';
 import type { BranchSettings } from '@/types/settings';
-import type { User } from '@/types/permissions';
+import type { BranchStaff } from '@/services';
+import type { OrderType } from '@/types/kitchen';
 
 export type PaymentMode = 'cash' | 'card' | 'mixed' | 'credit';
 
@@ -37,6 +38,8 @@ export interface CheckoutResult {
   changeH: number;
   /** Extra collected against the customer's existing balance. */
   settleH: number;
+  /** How the order is served, when asked; null when not said. */
+  orderType: OrderType | null;
 }
 
 export interface CheckoutModalProps {
@@ -52,7 +55,9 @@ export interface CheckoutModalProps {
   /** Branch rules: which tab opens first, and whether "served by" is asked. */
   settings: BranchSettings | null;
   /** People who can be credited with the work. */
-  staff: User[];
+  staff: BranchStaff[];
+  /** Ask how the order is served — when something in it goes to the kitchen. */
+  askOrderType?: boolean;
   onConfirm: (result: CheckoutResult) => Promise<boolean>;
 }
 
@@ -87,6 +92,7 @@ export function CheckoutModal({
   appliedDiscount,
   settings,
   staff,
+  askOrderType = false,
   onConfirm,
 }: CheckoutModalProps) {
   const { t } = useTranslation();
@@ -98,6 +104,7 @@ export function CheckoutModal({
   const [settle, setSettle] = useState(false);
   const [customerTab, setCustomerTab] = useState<'walkin' | 'customer'>('walkin');
   const [servedById, setServedById] = useState<string | null>(null);
+  const [orderType, setOrderType] = useState<OrderType | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -107,6 +114,7 @@ export function CheckoutModal({
     setCash('');
     setCard('');
     setSettle(false);
+    setOrderType(null);
     setConfirming(false);
     setServedById(null);
 
@@ -176,6 +184,7 @@ export function CheckoutModal({
     const base = {
       settleH,
       servedByUserId: servedById,
+      orderType: askOrderType ? orderType : null,
       tenderedH: null as number | null,
       changeH: 0,
     };
@@ -430,7 +439,7 @@ export function CheckoutModal({
                   options={staff.map((member) => ({
                     value: member.id,
                     label: language === 'ar' ? member.nameAr : member.nameEn,
-                    description: member.username,
+                    description: language === 'ar' ? member.roleNameAr : member.roleNameEn,
                   }))}
                   value={servedById}
                   onChange={setServedById}
@@ -440,6 +449,25 @@ export function CheckoutModal({
                 />
 
                 {servedByBlocker && <p className="text-2xs text-danger-600">{servedByBlocker}</p>}
+              </div>
+            )}
+
+            {askOrderType && (
+              <div className="shrink-0 space-y-1 border-t border-dashed border-ink-200 pt-2">
+                <span className="text-xs font-medium text-ink-600">
+                  {t('checkout.customer.orderType')}
+                </span>
+                <SearchableSelect
+                  size="sm"
+                  options={(['dine_in', 'takeaway', 'delivery'] as const).map((value) => ({
+                    value,
+                    label: t(`kitchen.orderType.${value}`),
+                  }))}
+                  value={orderType}
+                  onChange={(value) => setOrderType((value as OrderType | null) ?? null)}
+                  placeholder={t('checkout.customer.orderTypePlaceholder')}
+                  isClearable
+                />
               </div>
             )}
           </section>

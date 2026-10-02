@@ -10,6 +10,7 @@ import type { ID, Timestamped } from './common';
 export type PermissionModule =
   | 'dashboard'
   | 'pos'
+  | 'kitchen'
   | 'sales'
   | 'products'
   | 'inventory'
@@ -35,27 +36,35 @@ export type PermissionKey =
   | 'pos.override_price'
   | 'pos.void_sale'
   | 'pos.return_sale'
+  | 'pos.open_drawer'
+  | 'kitchen.view'
+  | 'kitchen.update'
   | 'sales.view'
   | 'sales.view_details'
   | 'sales.return'
   | 'sales.void'
   | 'sales.reprint'
+  | 'sales.refund'
   | 'products.view'
   | 'products.create'
   | 'products.edit'
   | 'products.delete'
+  | 'catalog.activate'
   | 'inventory.view'
   | 'inventory.adjust'
   | 'inventory.stocktake'
   | 'inventory.purchase_entry'
+  | 'inventory.restock'
   | 'vendors.view'
   | 'vendors.create'
   | 'vendors.edit'
   | 'vendors.delete'
+  | 'vendors.pay'
   | 'customers.view'
   | 'customers.create'
   | 'customers.edit'
   | 'customers.delete'
+  | 'customers.credit'
   | 'branches.view'
   | 'branches.create'
   | 'branches.edit'
@@ -63,10 +72,14 @@ export type PermissionKey =
   | 'discounts.create'
   | 'discounts.edit'
   | 'discounts.delete'
+  | 'discounts.approve'
   | 'users.view'
   | 'users.create'
   | 'users.edit'
   | 'users.disable'
+  | 'users.delete'
+  | 'users.assign_branches'
+  | 'users.override'
   | 'roles.view'
   | 'roles.create'
   | 'roles.edit'
@@ -79,11 +92,16 @@ export type PermissionKey =
   | 'finance.expenses'
   | 'finance.ledger'
   | 'finance.reverse'
+  | 'finance.commission'
+  | 'finance.commission_rules'
+  | 'finance.payroll'
+  | 'finance.opening_balances'
   | 'reports.view'
   | 'reports.export'
   | 'devices.view'
   | 'devices.manage'
   | 'devices.command'
+  | 'devices.discover'
   | 'audit.view'
   | 'audit.performance'
   | 'settings.view'
@@ -95,6 +113,7 @@ export type Sensitivity = 'financial' | 'personal' | null;
 /** The verb half of a permission key. Matches the `actions.*` dictionary. */
 export type PermissionAction =
   | 'view'
+  | 'activate'
   | 'manage'
   | 'command'
   | 'performance'
@@ -117,7 +136,21 @@ export type PermissionAction =
   | 'purchase_entry'
   | 'expenses'
   | 'ledger'
-  | 'reverse';
+  | 'reverse'
+  | 'open_drawer'
+  | 'update'
+  | 'refund'
+  | 'restock'
+  | 'pay'
+  | 'credit'
+  | 'approve'
+  | 'assign_branches'
+  | 'override'
+  | 'commission'
+  | 'commission_rules'
+  | 'opening_balances'
+  | 'payroll'
+  | 'discover';
 
 export interface PermissionDefinition {
   key: PermissionKey;
@@ -127,19 +160,29 @@ export interface PermissionDefinition {
   sensitivity: Sensitivity;
 }
 
+/*
+ * Mirrors core.Permission on the server, including each key's sensitivity —
+ * the server refuses an external account anything not "general" (null here),
+ * so the form's hint has to agree with it or it promises what is then refused.
+ */
 export const PERMISSIONS: PermissionDefinition[] = [
-  { key: 'dashboard.view', module: 'dashboard', action: 'view', sensitivity: 'financial' },
+  { key: 'dashboard.view', module: 'dashboard', action: 'view', sensitivity: null },
 
   { key: 'pos.view', module: 'pos', action: 'view', sensitivity: null },
-  { key: 'pos.create_sale', module: 'pos', action: 'create_sale', sensitivity: 'financial' },
-  { key: 'pos.apply_discount', module: 'pos', action: 'apply_discount', sensitivity: 'financial' },
+  { key: 'pos.create_sale', module: 'pos', action: 'create_sale', sensitivity: null },
+  { key: 'pos.apply_discount', module: 'pos', action: 'apply_discount', sensitivity: null },
   { key: 'pos.override_price', module: 'pos', action: 'override_price', sensitivity: 'financial' },
   { key: 'pos.void_sale', module: 'pos', action: 'void_sale', sensitivity: 'financial' },
   { key: 'pos.return_sale', module: 'pos', action: 'return_sale', sensitivity: 'financial' },
+  { key: 'pos.open_drawer', module: 'pos', action: 'open_drawer', sensitivity: 'financial' },
 
-  { key: 'sales.view', module: 'sales', action: 'view', sensitivity: 'financial' },
-  { key: 'sales.view_details', module: 'sales', action: 'view_details', sensitivity: 'financial' },
+  { key: 'kitchen.view', module: 'kitchen', action: 'view', sensitivity: null },
+  { key: 'kitchen.update', module: 'kitchen', action: 'update', sensitivity: null },
+
+  { key: 'sales.view', module: 'sales', action: 'view', sensitivity: null },
+  { key: 'sales.view_details', module: 'sales', action: 'view_details', sensitivity: null },
   { key: 'sales.return', module: 'sales', action: 'return', sensitivity: 'financial' },
+  { key: 'sales.refund', module: 'sales', action: 'refund', sensitivity: 'financial' },
   { key: 'sales.void', module: 'sales', action: 'void', sensitivity: 'financial' },
   { key: 'sales.reprint', module: 'sales', action: 'reprint', sensitivity: null },
 
@@ -147,10 +190,14 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: 'products.create', module: 'products', action: 'create', sensitivity: null },
   { key: 'products.edit', module: 'products', action: 'edit', sensitivity: null },
   { key: 'products.delete', module: 'products', action: 'delete', sensitivity: null },
+  /* Server key for activate/deactivate on any catalog record. Listed under
+     products so the role matrix shows it beside the other product rights. */
+  { key: 'catalog.activate', module: 'products', action: 'activate', sensitivity: null },
 
   { key: 'inventory.view', module: 'inventory', action: 'view', sensitivity: null },
   { key: 'inventory.adjust', module: 'inventory', action: 'adjust', sensitivity: null },
   { key: 'inventory.stocktake', module: 'inventory', action: 'stocktake', sensitivity: null },
+  { key: 'inventory.restock', module: 'inventory', action: 'restock', sensitivity: null },
   {
     key: 'inventory.purchase_entry',
     module: 'inventory',
@@ -162,30 +209,41 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: 'vendors.create', module: 'vendors', action: 'create', sensitivity: null },
   { key: 'vendors.edit', module: 'vendors', action: 'edit', sensitivity: null },
   { key: 'vendors.delete', module: 'vendors', action: 'delete', sensitivity: null },
+  { key: 'vendors.pay', module: 'vendors', action: 'pay', sensitivity: 'financial' },
 
-  { key: 'customers.view', module: 'customers', action: 'view', sensitivity: 'personal' },
-  { key: 'customers.create', module: 'customers', action: 'create', sensitivity: 'personal' },
-  { key: 'customers.edit', module: 'customers', action: 'edit', sensitivity: 'personal' },
+  { key: 'customers.view', module: 'customers', action: 'view', sensitivity: null },
+  { key: 'customers.create', module: 'customers', action: 'create', sensitivity: null },
+  { key: 'customers.edit', module: 'customers', action: 'edit', sensitivity: null },
   { key: 'customers.delete', module: 'customers', action: 'delete', sensitivity: 'personal' },
+  { key: 'customers.credit', module: 'customers', action: 'credit', sensitivity: 'financial' },
 
   { key: 'branches.view', module: 'branches', action: 'view', sensitivity: null },
   { key: 'branches.create', module: 'branches', action: 'create', sensitivity: null },
   { key: 'branches.edit', module: 'branches', action: 'edit', sensitivity: null },
 
   { key: 'discounts.view', module: 'discounts', action: 'view', sensitivity: null },
-  { key: 'discounts.create', module: 'discounts', action: 'create', sensitivity: 'financial' },
-  { key: 'discounts.edit', module: 'discounts', action: 'edit', sensitivity: 'financial' },
-  { key: 'discounts.delete', module: 'discounts', action: 'delete', sensitivity: 'financial' },
+  { key: 'discounts.create', module: 'discounts', action: 'create', sensitivity: null },
+  { key: 'discounts.edit', module: 'discounts', action: 'edit', sensitivity: null },
+  { key: 'discounts.delete', module: 'discounts', action: 'delete', sensitivity: null },
+  { key: 'discounts.approve', module: 'discounts', action: 'approve', sensitivity: 'financial' },
 
-  { key: 'users.view', module: 'users', action: 'view', sensitivity: null },
-  { key: 'users.create', module: 'users', action: 'create', sensitivity: null },
-  { key: 'users.edit', module: 'users', action: 'edit', sensitivity: null },
-  { key: 'users.disable', module: 'users', action: 'disable', sensitivity: null },
+  { key: 'users.view', module: 'users', action: 'view', sensitivity: 'personal' },
+  { key: 'users.create', module: 'users', action: 'create', sensitivity: 'personal' },
+  { key: 'users.edit', module: 'users', action: 'edit', sensitivity: 'personal' },
+  { key: 'users.disable', module: 'users', action: 'disable', sensitivity: 'personal' },
+  { key: 'users.delete', module: 'users', action: 'delete', sensitivity: 'personal' },
+  {
+    key: 'users.assign_branches',
+    module: 'users',
+    action: 'assign_branches',
+    sensitivity: null,
+  },
+  { key: 'users.override', module: 'users', action: 'override', sensitivity: null },
 
-  { key: 'roles.view', module: 'roles', action: 'view', sensitivity: null },
-  { key: 'roles.create', module: 'roles', action: 'create', sensitivity: null },
-  { key: 'roles.edit', module: 'roles', action: 'edit', sensitivity: null },
-  { key: 'roles.delete', module: 'roles', action: 'delete', sensitivity: null },
+  { key: 'roles.view', module: 'roles', action: 'view', sensitivity: 'personal' },
+  { key: 'roles.create', module: 'roles', action: 'create', sensitivity: 'personal' },
+  { key: 'roles.edit', module: 'roles', action: 'edit', sensitivity: 'personal' },
+  { key: 'roles.delete', module: 'roles', action: 'delete', sensitivity: 'personal' },
 
   { key: 'company.view', module: 'company', action: 'view', sensitivity: null },
   { key: 'company.edit', module: 'company', action: 'edit', sensitivity: null },
@@ -197,15 +255,30 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: 'finance.expenses', module: 'finance', action: 'expenses', sensitivity: 'financial' },
   { key: 'finance.ledger', module: 'finance', action: 'ledger', sensitivity: 'financial' },
   { key: 'finance.reverse', module: 'finance', action: 'reverse', sensitivity: 'financial' },
+  { key: 'finance.commission', module: 'finance', action: 'commission', sensitivity: 'financial' },
+  {
+    key: 'finance.commission_rules',
+    module: 'finance',
+    action: 'commission_rules',
+    sensitivity: null,
+  },
+  { key: 'finance.payroll', module: 'finance', action: 'payroll', sensitivity: 'financial' },
+  {
+    key: 'finance.opening_balances',
+    module: 'finance',
+    action: 'opening_balances',
+    sensitivity: 'financial',
+  },
 
   { key: 'reports.view', module: 'reports', action: 'view', sensitivity: 'financial' },
   { key: 'reports.export', module: 'reports', action: 'export', sensitivity: 'financial' },
 
-  /* Mirrors migration 19. The trail records who did what, which is staff
-     conduct, so it is marked personal; timings are not. */
+  /* The trail records who did what, which is staff conduct, so it is
+     personal; timings are not. */
   { key: 'devices.view', module: 'devices', action: 'view', sensitivity: null },
   { key: 'devices.manage', module: 'devices', action: 'manage', sensitivity: null },
   { key: 'devices.command', module: 'devices', action: 'command', sensitivity: null },
+  { key: 'devices.discover', module: 'devices', action: 'discover', sensitivity: null },
   { key: 'audit.view', module: 'audit', action: 'view', sensitivity: 'personal' },
   { key: 'audit.performance', module: 'audit', action: 'performance', sensitivity: null },
   { key: 'settings.view', module: 'settings', action: 'view', sensitivity: null },
@@ -218,6 +291,7 @@ export const ALL_PERMISSIONS: PermissionKey[] = PERMISSIONS.map((permission) => 
 export const MODULE_ORDER: PermissionModule[] = [
   'dashboard',
   'pos',
+  'kitchen',
   'sales',
   'products',
   'inventory',

@@ -55,7 +55,6 @@ const UsersPage = lazy(() => import('@/pages/access/UsersPage'));
 const UserFormPage = lazy(() => import('@/pages/access/UserFormPage'));
 const RolesPage = lazy(() => import('@/pages/access/RolesPage'));
 const RoleFormPage = lazy(() => import('@/pages/access/RoleFormPage'));
-const ComponentsPage = lazy(() => import('@/pages/ComponentsPage'));
 const OverviewPage = lazy(() => import('@/pages/OverviewPage'));
 const NotFoundPage = lazy(() => import('@/pages/NotFoundPage'));
 
@@ -145,7 +144,6 @@ export const router = createBrowserRouter([
           { path: ROUTES.roles.slice(1), element: <Page><RolesPage /></Page> },
           { path: 'roles/new', element: <Page><RoleFormPage mode="create" /></Page> },
           { path: 'roles/:id/edit', element: <Page><RoleFormPage mode="edit" /></Page> },
-          { path: ROUTES.components.slice(1), element: <Page><ComponentsPage /></Page> },
           { path: '*', element: <Page><NotFoundPage /></Page> },
         ],
       },

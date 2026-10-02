@@ -1,6 +1,8 @@
-import { USE_MOCKS } from '@/config/env';
-import { payrollApi } from './api';
+import { commissionRuleApi, financeApi, payrollApi, type ApiCommissionRule } from './api';
+import { openingBalanceApi, type ApiOpeningBalances } from './api/financeApi';
+import type { ApiCommissionEntry } from './api/salesApi';
 import { num, str } from './mappers/saleMappers';
+import { invalidate } from './dataVersion';
 import type {
   CommissionEntry,
   CommissionRule,
@@ -8,27 +10,42 @@ import type {
   PayrollLine,
   PayrollRun,
 } from '@/types/finance';
-import {
-  commissionForH,
-  netPayH,
-  openingEquityH,
-  ruleApplies,
-  ruleSpecificity,
-} from '@/types/finance';
-import { credit, debit, ledgerService } from './ledgerService';
-import { HttpError } from './http';
-import { delay, nextId, timestamp, validationFailed } from './mock/store';
+import { utc } from './mappers/time';
+import { validationFailed } from './util';
 
 /* ------------------------------------------------------------------ */
 /* Opening balances                                                    */
 /* ------------------------------------------------------------------ */
 
-let posted: (OpeningBalances & { postedAt: string; actor: string }) | null = null;
+export type PostedOpeningBalances = OpeningBalances & {
+  postedAt: string;
+  actor: string;
+  /** The journal entry; reverse it in the ledger to allow a new posting. */
+  entryId: string | null;
+};
+
+function toPosted(response: ApiOpeningBalances): PostedOpeningBalances | null {
+  if (!response.posted) return null;
+  const current = response.current;
+
+  return {
+    cashH: response.cashH ?? current?.cashH ?? 0,
+    bankH: response.bankH ?? current?.bankH ?? 0,
+    inventoryH: response.inventoryH ?? current?.inventoryH ?? 0,
+    receivablesH: response.receivablesH ?? current?.receivablesH ?? 0,
+    payablesH: response.payablesH ?? current?.payablesH ?? 0,
+    vatH: response.vatH ?? current?.vatH ?? 0,
+    asOf: (response.asOf ?? current?.asOf ?? '').slice(0, 10),
+    postedAt: utc(response.postedAt ?? current?.postedAt),
+    actor: response.actor ?? current?.actor ?? '',
+    entryId: response.entryId ?? current?.entryId ?? null,
+  };
+}
 
 export const openingBalanceService = {
-  async get(): Promise<(OpeningBalances & { postedAt: string; actor: string }) | null> {
-    await delay(120);
-    return posted;
+  /** The standing posting for the business (or one branch); null if none. */
+  async get(branchId?: string | null): Promise<PostedOpeningBalances | null> {
+    return toPosted(await openingBalanceApi.get(branchId));
   },
 
   /**
@@ -36,20 +53,13 @@ export const openingBalanceService = {
    *
    * Once only: opening balances are the line before which nothing is recorded,
    * and posting a second set would double every asset. Correcting one means
-   * reversing the entry in the ledger, like any other mistake.
+   * reversing the entry in the ledger, like any other mistake (the server
+   * answers 409 already_posted otherwise). Whatever does not net out lands in
+   * opening equity, so the entry balances.
    */
-  async post(input: OpeningBalances & { actor: string }): Promise<OpeningBalances> {
-    await delay(420);
-
-    if (posted) {
-      throw new HttpError({
-        status: 409,
-        code: 'already_posted',
-        message:
-          'Opening balances have already been posted. Reverse the entry in the ledger to correct them.',
-      });
-    }
-
+  async post(
+    input: OpeningBalances & { branchId?: string | null },
+  ): Promise<PostedOpeningBalances | null> {
     const negative = Object.entries(input).find(
       ([key, value]) => typeof value === 'number' && value < 0 && key !== 'vatH',
     );
@@ -57,32 +67,19 @@ export const openingBalanceService = {
       throw validationFailed({ [negative[0]]: ['Opening balances cannot be negative.'] });
     }
 
-    const { equityH } = openingEquityH(input);
-
-    /* Whatever does not net out lands in suspense, so the entry balances and
-       an accountant can reclassify it later. */
-    await ledgerService.post({
-      kind: 'opening_balance',
-      sourceReference: 'OPENING',
-      description: 'Opening balances',
-      postedAt: new Date(`${input.asOf}T00:00:00.000Z`).toISOString(),
-      actor: input.actor,
-      lines: [
-        debit('1000', input.cashH, 'Opening cash'),
-        debit('1100', input.bankH, 'Opening bank'),
-        debit('1200', input.inventoryH, 'Opening inventory'),
-        debit('1400', input.receivablesH, 'Opening receivables'),
-        credit('2000', input.payablesH, 'Opening payables'),
-        credit('2100', Math.max(0, input.vatH), 'Opening VAT'),
-        debit('1300', Math.max(0, -input.vatH), 'Opening input VAT'),
-        equityH >= 0
-          ? credit('3900', equityH, 'Opening equity')
-          : debit('3900', Math.abs(equityH), 'Opening equity'),
-      ],
+    const posted = await openingBalanceApi.post({
+      branchId: input.branchId ?? null,
+      asOf: input.asOf,
+      cashH: input.cashH,
+      bankH: input.bankH,
+      inventoryH: input.inventoryH,
+      receivablesH: input.receivablesH,
+      payablesH: input.payablesH,
+      vatH: input.vatH,
     });
 
-    posted = { ...input, postedAt: timestamp(), actor: input.actor };
-    return input;
+    invalidate('ledger');
+    return toPosted(posted);
   },
 };
 
@@ -90,163 +87,133 @@ export const openingBalanceService = {
 /* Commission                                                          */
 /* ------------------------------------------------------------------ */
 
-let rules: CommissionRule[] = [
-  {
-    id: 'crl_default',
-    userIds: [],
-    basis: 'percentage',
-    value: 2000,
-    itemIds: [],
-    status: 'active',
-    createdAt: '2026-08-01T00:00:00.000Z',
-    updatedAt: '2026-08-01T00:00:00.000Z',
-  },
-];
+function toRule(row: ApiCommissionRule): CommissionRule {
+  return {
+    id: row.id,
+    userIds: row.userIds,
+    basis: row.basis,
+    value: row.value,
+    itemIds: row.itemIds,
+    status: row.status,
+    createdAt: utc(row.createdAt),
+    updatedAt: utc(row.updatedAt),
+  };
+}
 
-let entries: CommissionEntry[] = [];
+function toRulePayload(input: Omit<CommissionRule, 'id' | 'createdAt' | 'updatedAt'>) {
+  return {
+    userIds: input.userIds,
+    basis: input.basis,
+    value: input.value,
+    itemIds: input.itemIds,
+    status: input.status,
+  };
+}
+
+function toCommissionEntry(row: ApiCommissionEntry): CommissionEntry {
+  const earnedAt = utc(row.earnedAt);
+  return {
+    id: row.id,
+    saleId: row.saleId,
+    invoiceNumber: row.invoiceNumber,
+    userId: row.userId,
+    itemId: row.itemId,
+    itemNameAr: row.itemNameAr,
+    itemNameEn: row.itemNameEn,
+    lineGrossH: row.lineGrossH,
+    amountH: row.amountH,
+    basis: row.basis,
+    rateAtSale: row.rateAtSale,
+    earnedAt,
+    payrollRunId: row.payrollRunId ?? null,
+    /* The entry is written once, at the sale, and never edited. */
+    createdAt: earnedAt,
+    updatedAt: earnedAt,
+  };
+}
+
+/** Commission per employee for one month, as the server totals it. */
+export interface CommissionSummary {
+  userId: string;
+  nameAr: string;
+  nameEn: string;
+  /** YYYY-MM. */
+  period: string;
+  /** Sale lines that earned commission. */
+  saleLines: number;
+  earnedH: number;
+  /** Settled by a payroll run. */
+  paidH: number;
+  outstandingH: number;
+}
 
 export const commissionService = {
   async rules(): Promise<CommissionRule[]> {
-    await delay(120);
-    return rules;
+    const rows = await commissionRuleApi.list();
+    return rows.map(toRule);
   },
 
   async saveRule(input: Omit<CommissionRule, 'id' | 'createdAt' | 'updatedAt'>): Promise<CommissionRule> {
-    await delay(280);
-
-    if (input.value <= 0) {
-      throw validationFailed({ value: ['Enter a value above zero.'] });
-    }
-    if (input.basis === 'percentage' && input.value > 100 * 100) {
-      throw validationFailed({ value: ['A commission cannot exceed 100%.'] });
-    }
-
-    const now = timestamp();
-    const created: CommissionRule = {
-      ...input,
-      id: nextId('crl'),
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    rules = [...rules, created];
+    const created = toRule(await commissionRuleApi.create(toRulePayload(input)));
+    invalidate('commission');
     return created;
   },
 
-  /** The most specific rule covering this person and service. */
-  resolveRule(userId: string, itemId: string): CommissionRule | null {
-    const candidates = rules
-      .filter((rule) => ruleApplies(rule, userId, itemId))
-      .sort((a, b) => ruleSpecificity(b) - ruleSpecificity(a));
-
-    return candidates[0] ?? null;
-  },
-
+  /* Editing a rule changes future sales only. Commission already earned was
+     frozen at the moment of sale and the server leaves it alone. */
   async updateRule(
     id: string,
     input: Omit<CommissionRule, 'id' | 'createdAt' | 'updatedAt'>,
   ): Promise<CommissionRule> {
-    await delay(280);
-
-    const existing = rules.find((rule) => rule.id === id);
-    if (!existing) {
-      throw new HttpError({ status: 404, code: 'not_found', message: 'Rule not found.' });
-    }
-
-    if (input.value <= 0) {
-      throw validationFailed({ value: ['Enter a value above zero.'] });
-    }
-    if (input.basis === 'percentage' && input.value > 100 * 100) {
-      throw validationFailed({ value: ['A commission cannot exceed 100%.'] });
-    }
-
-    /* Editing a rule changes future sales only. Commission already earned was
-       frozen at the moment of sale and is deliberately left alone. */
-    const updated: CommissionRule = { ...existing, ...input, updatedAt: timestamp() };
-    rules = rules.map((rule) => (rule.id === id ? updated : rule));
+    const updated = toRule(await commissionRuleApi.update(id, toRulePayload(input)));
+    invalidate('commission');
     return updated;
   },
 
   async removeRule(id: string): Promise<void> {
-    await delay(240);
-    rules = rules.filter((rule) => rule.id !== id);
+    await commissionRuleApi.remove(id);
+    invalidate('commission');
   },
 
   /**
-   * Freeze commission for a sale.
-   *
-   * Called at the moment of sale with the figure computed from the rules as
-   * they stand then. Nothing recomputes it afterwards.
+   * The frozen commission lines behind the totals — one per sale line that
+   * earned, with the rate that applied at the time.
    */
-  async recordForSale(input: {
-    saleId: string;
-    invoiceNumber: string;
-    userId: string;
-    lines: { itemId: string; nameAr: string; nameEn: string; grossH: number }[];
-  }): Promise<CommissionEntry[]> {
-    const now = timestamp();
-    const created: CommissionEntry[] = [];
-
-    for (const line of input.lines) {
-      const rule = commissionService.resolveRule(input.userId, line.itemId);
-      if (!rule) continue;
-
-      const amountH = commissionForH(rule, line.grossH);
-      if (amountH <= 0) continue;
-
-      created.push({
-        id: nextId('cme'),
-        saleId: input.saleId,
-        invoiceNumber: input.invoiceNumber,
-        userId: input.userId,
-        itemId: line.itemId,
-        itemNameAr: line.nameAr,
-        itemNameEn: line.nameEn,
-        lineGrossH: line.grossH,
-        amountH,
-        basis: rule.basis,
-        rateAtSale: rule.value,
-        earnedAt: now,
-        payrollRunId: null,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-
-    entries = [...created, ...entries];
-    return created;
-  },
-
-  async list(userId?: string, period?: string): Promise<CommissionEntry[]> {
-    await delay(160);
-
-    return entries.filter((entry) => {
-      if (userId && entry.userId !== userId) return false;
-      if (period && entry.earnedAt.slice(0, 7) !== period) return false;
-      return true;
+  async entries(query: {
+    userId?: string;
+    period?: string;
+    saleId?: string;
+    branchId?: string | null;
+    paid?: boolean;
+  } = {}): Promise<CommissionEntry[]> {
+    const rows = await financeApi.commissionEntries({
+      userId: query.userId,
+      month: query.period,
+      saleId: query.saleId,
+      branchId: query.branchId,
+      paid: query.paid,
     });
+    return rows.map(toCommissionEntry);
   },
 
-  /** Unpaid commission per employee for a period. */
-  async unpaidFor(period: string): Promise<Record<string, number>> {
-    await delay(140);
+  /**
+   * Commission earned per employee, optionally for one person or month.
+   *
+   * Totals; `entries` has the sale lines behind each figure.
+   */
+  async list(userId?: string, period?: string): Promise<CommissionSummary[]> {
+    const rows = await financeApi.commission({ userId, month: period });
 
-    return entries
-      .filter((entry) => entry.payrollRunId === null && entry.earnedAt.slice(0, 7) === period)
-      .reduce<Record<string, number>>((totals, entry) => {
-        totals[entry.userId] = (totals[entry.userId] ?? 0) + entry.amountH;
-        return totals;
-      }, {});
-  },
-
-  /** Mark commission as settled by a payroll run. */
-  async markPaid(period: string, runId: string): Promise<void> {
-    const now = timestamp();
-    entries = entries.map((entry) =>
-      entry.payrollRunId === null && entry.earnedAt.slice(0, 7) === period
-        ? { ...entry, payrollRunId: runId, updatedAt: now }
-        : entry,
-    );
+    return rows.map((row) => ({
+      userId: str(row.userId),
+      nameAr: str(row.nameAr),
+      nameEn: str(row.nameEn),
+      period: str(row.periodMonth),
+      saleLines: num(row.saleLines),
+      earnedH: num(row.earnedH),
+      paidH: num(row.paidH),
+      outstandingH: num(row.outstandingH),
+    }));
   },
 };
 
@@ -254,122 +221,83 @@ export const commissionService = {
 /* Payroll                                                             */
 /* ------------------------------------------------------------------ */
 
-let runs: PayrollRun[] = [];
-let runSequence = 100;
+type Row = Record<string, unknown>;
+
+function toPayrollLine(row: Row): PayrollLine {
+  return {
+    userId: str(row.userId),
+    nameAr: str(row.nameAr),
+    nameEn: str(row.nameEn),
+    baseSalaryH: num(row.baseSalaryH),
+    commissionH: num(row.commissionH),
+    allowancesH: num(row.allowancesH),
+    deductionsH: num(row.deductionsH),
+    netPayH: num(row.netPayH),
+  };
+}
+
+function toPayrollRun(run: Row, lines: Row[]): PayrollRun {
+  return {
+    id: str(run.runId),
+    reference: str(run.reference),
+    period: str(run.periodMonth),
+    lines: lines.map(toPayrollLine),
+    totalH: num(run.totalH),
+    /* "approved" is a server state with no screen of its own; until paid it
+       is still a draft as far as anyone here is concerned. */
+    status: str(run.status) === 'paid' ? 'paid' : 'draft',
+    paidOn: run.paidOn ? str(run.paidOn).slice(0, 10) : null,
+    actor: str(run.updatedBy ?? run.createdBy, 'System'),
+    createdAt: utc(str(run.createdAtUtc ?? run.createdAt)),
+    updatedAt: utc(str(run.updatedAtUtc ?? run.updatedAt)),
+  };
+}
 
 export const payrollService = {
-  async list(): Promise<PayrollRun[]> {
-    if (!USE_MOCKS) {
-      const rows = await payrollApi.runs(null);
-      return rows.map((row) => ({
-        id: str(row.runId),
-        reference: str(row.reference),
-        periodMonth: str(row.periodMonth),
-        branchId: (row.branchId as string | null) ?? null,
-        status: str(row.status, 'draft'),
-        totalH: num(row.totalH),
-        paidOn: row.paidOn ? str(row.paidOn).slice(0, 10) : null,
-        employeeCount: num(row.employeeCount),
-        salariesH: num(row.salariesH),
-        commissionH: num(row.commissionH),
-        deductionsH: num(row.deductionsH),
-        createdAt: str(row.createdAtUtc),
-        updatedAt: str(row.updatedAtUtc),
-      })) as unknown as PayrollRun[];
-    }
+  /** Every run, newest period first, with its lines. */
+  async list(branchId?: string | null): Promise<PayrollRun[]> {
+    const rows = await payrollApi.runs(branchId ?? null);
+    /* The list route carries totals only; the screens count heads and split
+       salary from commission, so read each run. Runs are monthly, so this
+       stays a handful of requests. */
+    return Promise.all(rows.map((row) => payrollService.get(str(row.runId))));
+  },
 
-    await delay(160);
-    return [...runs].sort((a, b) => b.period.localeCompare(a.period));
+  async get(runId: string): Promise<PayrollRun> {
+    const { run, lines } = await payrollApi.run(runId);
+    return toPayrollRun(run, lines);
   },
 
   /**
    * Build a draft for a period.
    *
-   * Commission is pulled from what was actually frozen at each sale, not
-   * recalculated — which is the whole reason it was frozen.
+   * The server takes each active employee's base salary from their record and
+   * commission from what was actually frozen at each sale, not recalculated —
+   * which is the whole reason it was frozen. Re-drafting replaces any earlier
+   * draft for the same period.
    */
-  async draft(input: {
-    period: string;
-    staff: { userId: string; nameAr: string; nameEn: string; baseSalaryH: number }[];
-  }): Promise<PayrollLine[]> {
-    await delay(240);
-
-    const commissions = await commissionService.unpaidFor(input.period);
-
-    return input.staff.map((member) => {
-      const line = {
-        userId: member.userId,
-        nameAr: member.nameAr,
-        nameEn: member.nameEn,
-        baseSalaryH: member.baseSalaryH,
-        commissionH: commissions[member.userId] ?? 0,
-        deductionsH: 0,
-      };
-      return { ...line, netPayH: netPayH(line) };
-    });
+  async draft(input: { period: string; branchId?: string | null }): Promise<PayrollRun> {
+    const drafted = await payrollApi.draft(input.period, input.branchId ?? null);
+    return payrollService.get(drafted.runId);
   },
 
-  /** Post the run: salaries and commission become an expense, cash goes out. */
-  async pay(input: {
-    period: string;
-    lines: PayrollLine[];
-    paidOn: string;
-    actor: string;
-  }): Promise<PayrollRun> {
-    await delay(460);
-
-    if (runs.some((run) => run.period === input.period && run.status === 'paid')) {
-      throw new HttpError({
-        status: 409,
-        code: 'already_paid',
-        message: 'Payroll for this period has already been paid.',
+  /**
+   * Save any edits to the lines, then pay the run: salaries and commission
+   * become an expense and cash goes out.
+   */
+  async pay(input: { runId: string; lines: PayrollLine[]; paidOn: string }): Promise<PayrollRun> {
+    for (const line of input.lines) {
+      await payrollApi.updateLine(input.runId, line.userId, {
+        baseSalaryH: line.baseSalaryH,
+        allowancesH: line.allowancesH,
+        deductionsH: line.deductionsH,
       });
     }
 
-    const salariesH = input.lines.reduce((sum, line) => sum + line.baseSalaryH, 0);
-    const commissionH = input.lines.reduce((sum, line) => sum + line.commissionH, 0);
-    const deductionsH = input.lines.reduce((sum, line) => sum + line.deductionsH, 0);
-    const totalH = input.lines.reduce((sum, line) => sum + line.netPayH, 0);
+    await payrollApi.pay(input.runId, input.paidOn);
+    /* Paying settles the commission it covers, as well as posting. */
+    invalidate('ledger', 'commission');
 
-    if (totalH <= 0) {
-      throw validationFailed({ lines: ['There is nothing to pay for this period.'] });
-    }
-
-    runSequence += 1;
-    const now = timestamp();
-
-    const run: PayrollRun = {
-      id: nextId('pay'),
-      reference: `PR-${runSequence}`,
-      period: input.period,
-      lines: input.lines,
-      totalH,
-      status: 'paid',
-      paidOn: input.paidOn,
-      actor: input.actor,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    /* Deductions reduce what is paid out but not what was earned, so they
-       credit the expense back rather than being netted off the salary line. */
-    await ledgerService.post({
-      kind: 'payroll',
-      sourceReference: run.reference,
-      description: `Payroll ${input.period}`,
-      postedAt: new Date(`${input.paidOn}T00:00:00.000Z`).toISOString(),
-      actor: input.actor,
-      lines: [
-        debit('6200', salariesH, 'Salaries'),
-        debit('6300', commissionH, 'Commission'),
-        credit('6200', deductionsH, 'Deductions'),
-        credit('1100', totalH, 'Paid from bank'),
-      ],
-    });
-
-    await commissionService.markPaid(input.period, run.id);
-
-    runs = [run, ...runs];
-    return run;
+    return payrollService.get(input.runId);
   },
 };

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ScanLine } from 'lucide-react';
 import { Input } from '@/components/ui';
 import { CartPanel } from '@/features/pos/CartPanel';
+import { ApprovalModal } from '@/features/pos/ApprovalModal';
 import { CheckoutModal, type CheckoutResult } from '@/features/pos/CheckoutModal';
 import { OrderComplete } from '@/features/pos/OrderComplete';
 import { CategoryScroller } from '@/features/pos/CategoryScroller';
@@ -13,17 +14,18 @@ import { useToast } from '@/contexts/ToastContext';
 import { useI18n, useTranslation } from '@/i18n';
 import { ROUTES } from '@/routes/paths';
 import {
+  branchStaffService,
   catalogService,
   categoryService,
   customerService,
   discountService,
-  kitchenService,
   printGroupService,
   printService,
   settingsService,
-  userService,
   safeCall,
   salesService,
+  HttpError,
+  type BranchStaff,
 } from '@/services';
 import { isProduct } from '@/types/catalog';
 import type { CatalogItem, Category } from '@/types/catalog';
@@ -31,7 +33,6 @@ import type { Customer, Sale, SalePayment } from '@/types/sales';
 import { buildPrintDocuments, groupsInOrder } from '@/types/printing';
 import type { PrintGroup } from '@/types/printing';
 import type { BranchSettings } from '@/types/settings';
-import type { User } from '@/types/permissions';
 import { NO_APPROVAL, resolveAutomatic } from '@/types/discounts';
 import type { DiscountApproval, DiscountableLine } from '@/types/discounts';
 import type { ResolvedDiscount } from '@/services';
@@ -54,7 +55,10 @@ export default function PosPage() {
   const toast = useToast();
   const navigate = useNavigate();
 
-  const { role, activeBranch } = useSession();
+  const { user, role, activeBranch, can } = useSession();
+  /* Who is at the till, for the receipt and any approval they give. */
+  const signedInName =
+    (language === 'ar' ? user?.nameAr : user?.nameEn) || user?.nameEn || user?.username || '';
   const cart = usePosCart();
   const payment = useDisclosure();
   const scanRef = useRef<HTMLInputElement>(null);
@@ -70,11 +74,18 @@ export default function PosPage() {
   const [sentToKitchen, setSentToKitchen] = useState(false);
   const [printGroups, setPrintGroups] = useState<PrintGroup[]>([]);
   const [settings, setSettings] = useState<BranchSettings | null>(null);
-  const [staff, setStaff] = useState<User[]>([]);
+  const [staff, setStaff] = useState<BranchStaff[]>([]);
   const [completedLines, setCompletedLines] = useState<typeof cart.lines>([]);
   const [discounts, setDiscounts] = useState<ResolvedDiscount[]>([]);
   const [approval, setApproval] = useState<DiscountApproval>(NO_APPROVAL);
   const [discountCapped, setDiscountCapped] = useState(false);
+  /* Who approved the applied discount, sent with the sale. The password is
+     present only when a manager approved on the cashier's screen. */
+  const [approvalBy, setApprovalBy] = useState<{ userId: string; password: string | null } | null>(
+    null,
+  );
+  const [approving, setApproving] = useState(false);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -85,14 +96,14 @@ export default function PosPage() {
       safeCall(() => categoryService.list()),
       safeCall(() => customerService.list()),
       safeCall(() => printGroupService.list()),
-      safeCall(() => userService.list()),
+      safeCall(() => branchStaffService.list(activeBranch?.id ?? null)),
     ]);
 
     if (itemResult.ok) setItems(itemResult.data);
     if (categoryResult.ok) setCategories(categoryResult.data);
     if (customerResult.ok) setCustomers(customerResult.data);
     if (printGroupResult.ok) setPrintGroups(printGroupResult.data);
-    if (staffResult.ok) setStaff(staffResult.data.filter((user) => user.status === 'active'));
+    if (staffResult.ok) setStaff(staffResult.data);
 
     if (activeBranch) {
       const settingsResult = await safeCall(() => settingsService.get(activeBranch.id));
@@ -164,6 +175,7 @@ export default function PosPage() {
           setApproval(
             auto.eligibility.requiresApproval ? { ...NO_APPROVAL, state: 'pending' } : NO_APPROVAL,
           );
+          setApprovalBy(null);
         }
       }
     })();
@@ -189,6 +201,7 @@ export default function PosPage() {
     if (!entry || !entry.eligibility.eligible) {
       cart.setDiscount(0, null);
       setApproval(NO_APPROVAL);
+      setApprovalBy(null);
       setDiscountCapped(false);
       return;
     }
@@ -197,7 +210,10 @@ export default function PosPage() {
       cart.setDiscount(entry.eligibility.amountH, cart.discountId);
       setDiscountCapped(entry.eligibility.capped);
       /* The approved figure no longer matches, so approval must be sought again. */
-      if (approval.state === 'approved') setApproval({ ...NO_APPROVAL, state: 'pending' });
+      if (approval.state === 'approved') {
+        setApproval({ ...NO_APPROVAL, state: 'pending' });
+        setApprovalBy(null);
+      }
     }
   }, [discounts, cart.discountId, cart.discountH, cart, approval.state]);
 
@@ -228,11 +244,6 @@ export default function PosPage() {
       return item.categoryId === filter;
     });
   }, [items, search, filter]);
-
-  const selectedCustomer = useMemo(
-    () => customers.find((candidate) => candidate.id === cart.customerId) ?? null,
-    [customers, cart.customerId],
-  );
 
   function addItem(item: CatalogItem) {
     /* Refuse to oversell a tracked product rather than letting the cart go
@@ -272,9 +283,9 @@ export default function PosPage() {
   /**
    * Commit the sale.
    *
-   * Everything that has to happen together — the sale, the stock movement, the
-   * kitchen ticket, the discount usage, and any balance settlement — is
-   * sequenced here so no caller can perform half of it.
+   * The sale, its stock movement, the kitchen ticket and the discount usage
+   * happen together inside the one commit call on the server. A balance
+   * settlement follows as its own collection.
    */
   async function handleCheckout(result: CheckoutResult): Promise<boolean> {
     const payments: SalePayment[] = [];
@@ -289,20 +300,38 @@ export default function PosPage() {
         customerId: cart.customerId,
         servedByUserId: result.servedByUserId,
         discountH: cart.discountH,
+        discountId: cart.discountId,
         tenderedH: result.tenderedH,
-        cashierName: 'Ahmed Ali',
+        approvedByUserId: approval.state === 'approved' ? (approvalBy?.userId ?? null) : null,
+        approverPassword: approval.state === 'approved' ? (approvalBy?.password ?? null) : null,
+        orderType: result.orderType,
+        cashierName: signedInName,
         branchId: activeBranch?.id ?? null,
       }),
     );
 
     if (!saleResult.ok) {
+      /* The server is the judge of an approval. When it refuses one, the
+         discount goes back to waiting and the cashier is told why. */
+      const code = saleResult.error instanceof HttpError ? saleResult.error.code : '';
+      if (
+        code === 'discount_approval_required' ||
+        code === 'approver_not_allowed' ||
+        code === 'approval_invalid'
+      ) {
+        setApproval({ ...NO_APPROVAL, state: 'pending' });
+        setApprovalBy(null);
+        setApprovalError(saleResult.error.message);
+        payment.close();
+      }
       toast.error(t('pos.toast.failed'), saleResult.error.message);
       return false;
     }
 
     const sale = saleResult.data;
 
-    if (cart.discountId) await discountService.recordUsage(cart.discountId);
+    /* Discount usage is counted by the commit itself, from the discountId
+       sent above — counting it here as well would double it. */
 
     /* Settling an existing balance is a separate collection, not part of the
        sale — it must land on the customer statement as its own line. */
@@ -313,35 +342,23 @@ export default function PosPage() {
           amountH: result.settleH,
           method: result.cardH > 0 ? 'card' : 'cash',
           note: `Settled with ${sale.invoiceNumber}`,
-          receivedBy: 'Ahmed Ali',
+          receivedBy: signedInName,
         }),
       );
     }
 
-    /* Only lines flagged as needing preparation reach the kitchen board. */
-    const prepLines = cart.lines.filter((line) => {
+    /* Only lines flagged as needing preparation reach the kitchen board. The
+       server raises the ticket inside the commit, so this only decides
+       whether to tell the cashier it went. */
+    const sentLines = cart.lines.filter((line) => {
       const item = items.find((candidate) => candidate.id === line.itemId);
       return item?.requiresPreparation === true;
     });
 
-    if (prepLines.length > 0) {
-      await kitchenService.createFromSale({
-        orderNumber: sale.invoiceNumber,
-        customerName: selectedCustomer ? selectedCustomer.nameEn : null,
-        totalH: sale.totalH,
-        items: prepLines.map((line) => ({
-          productId: line.itemId,
-          nameAr: line.nameAr,
-          nameEn: line.nameEn,
-          quantity: line.quantity,
-        })),
-      });
-    }
-
     setCompletedLines(cart.lines);
     setCompletedSale(sale);
     setCompletedChangeH(result.changeH);
-    setSentToKitchen(prepLines.length > 0);
+    setSentToKitchen(sentLines.length > 0);
     payment.close();
     toast.success(t('pos.toast.completed', { invoice: sale.invoiceNumber }));
 
@@ -350,6 +367,8 @@ export default function PosPage() {
   }
 
   function selectDiscount(discountId: string | null) {
+    setApprovalBy(null);
+    setApprovalError(null);
     if (!discountId) {
       cart.setDiscount(0, null);
       setApproval(NO_APPROVAL);
@@ -370,31 +389,43 @@ export default function PosPage() {
   }
 
   /**
-   * Mocked approval. The real backend will enforce this — the frontend must not
-   * be the thing deciding whether a manager said yes.
+   * Approve a discount above its threshold.
+   *
+   * A cashier holding discounts.approve approves it themself. Anyone else
+   * hands the screen to a manager, who names themself and types their
+   * password; the server checks both when the sale is committed.
    */
-  function requestApproval(reason: string) {
-    setApproval({
-      state: 'pending',
-      approverName: null,
-      reason,
-      requestedAt: new Date().toISOString(),
-      decidedAt: null,
-    });
+  const [pendingReason, setPendingReason] = useState('');
 
-    window.setTimeout(() => {
-      setApproval((current) =>
-        current.state === 'pending'
-          ? {
-              ...current,
-              state: 'approved',
-              approverName: 'Sara Abdullah',
-              decidedAt: new Date().toISOString(),
-            }
-          : current,
-      );
-      toast.success(t('posDiscount.approval.approvedBy', { name: 'Sara Abdullah' }));
-    }, 1200);
+  function markApproved(approverName: string, reason: string) {
+    const now = new Date().toISOString();
+    setApproval({
+      state: 'approved',
+      approverName,
+      reason,
+      requestedAt: now,
+      decidedAt: now,
+    });
+    toast.success(t('posDiscount.approval.approvedBy', { name: approverName }));
+  }
+
+  function requestApproval(reason: string) {
+    if (can('discounts.approve') && user) {
+      setApprovalBy({ userId: user.id, password: null });
+      setApprovalError(null);
+      markApproved(signedInName, reason);
+      return;
+    }
+
+    setPendingReason(reason);
+    setApproving(true);
+  }
+
+  function approveByManager(approver: { userId: string; name: string; password: string }) {
+    setApprovalBy({ userId: approver.userId, password: approver.password });
+    setApprovalError(null);
+    setApproving(false);
+    markApproved(approver.name, pendingReason);
   }
 
   /** Item id -> print group, so the split can be computed without the catalog. */
@@ -431,6 +462,8 @@ export default function PosPage() {
   function startNewSale() {
     cart.clear();
     setApproval(NO_APPROVAL);
+    setApprovalBy(null);
+    setApprovalError(null);
     setDiscountCapped(false);
     setCompletedSale(null);
     setCompletedChangeH(0);
@@ -504,10 +537,21 @@ export default function PosPage() {
         onCustomerChange={cart.setCustomer}
         settings={settings}
         staff={staff}
+        askOrderType={cart.lines.some(
+          (line) => items.find((item) => item.id === line.itemId)?.requiresPreparation === true,
+        )}
         appliedDiscount={
           discounts.find((entry) => entry.discount.id === cart.discountId)?.discount ?? null
         }
         onConfirm={handleCheckout}
+      />
+
+      <ApprovalModal
+        open={approving}
+        onClose={() => setApproving(false)}
+        staff={staff.filter((member) => member.id !== user?.id)}
+        error={approvalError}
+        onApprove={approveByManager}
       />
 
       <OrderComplete

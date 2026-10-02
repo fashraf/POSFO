@@ -22,7 +22,7 @@ The app runs at `http://localhost:5173`.
 | `npm run preview` | Serve the production build locally |
 | `npm run typecheck` | Type-check without emitting |
 
-No backend is required.
+The app needs the Nazad POS API running — there is no offline or demo mode. In development the Vite dev server proxies `/api` to `API_PROXY_TARGET` (see `.env.development`, default `http://localhost:5001`).
 
 ---
 
@@ -137,7 +137,7 @@ Nothing above `src/services/http.ts` knows about `fetch`, URLs, or status codes.
 
 ```bash
 # .env.local
-VITE_API_BASE_URL=https://localhost:7001/api
+VITE_API_BASE_URL=https://localhost:7001
 ```
 
 Then define a service:

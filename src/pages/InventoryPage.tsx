@@ -209,7 +209,6 @@ export default function InventoryPage() {
         quantity: direction === 'remove' ? -magnitude : magnitude,
         reason,
         note: adjustNote,
-        actor: 'Ahmed Ali',
       }),
     );
     setSubmitting(false);

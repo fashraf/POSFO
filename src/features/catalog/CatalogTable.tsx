@@ -45,9 +45,10 @@ export interface CatalogTableProps {
   /** True when a search or filter is narrowing the list — changes the empty copy. */
   filtered: boolean;
   onRetry: () => void;
-  onEdit: (item: CatalogItem) => void;
-  onToggleStatus: (item: CatalogItem) => void;
-  onCreate: () => void;
+  /* Each action is left out when the user may not perform it. */
+  onEdit?: (item: CatalogItem) => void;
+  onToggleStatus?: (item: CatalogItem) => void;
+  onCreate?: () => void;
 }
 
 export function CatalogTable({
@@ -120,7 +121,9 @@ export function CatalogTable({
                   filtered ? t('catalog.empty.filteredDescription') : t('catalog.empty.description')
                 }
                 action={
-                  filtered ? undefined : <Button onClick={onCreate}>{t('catalog.addItem')}</Button>
+                  filtered || !onCreate ? undefined : (
+                    <Button onClick={onCreate}>{t('catalog.addItem')}</Button>
+                  )
                 }
               />
             </TableEmptyRow>
@@ -131,7 +134,11 @@ export function CatalogTable({
               const KindIcon = isProduct(item) ? Box : Wrench;
 
               return (
-                <TableRow key={item.id} interactive onClick={() => onEdit(item)}>
+                <TableRow
+                  key={item.id}
+                  interactive={Boolean(onEdit)}
+                  onClick={onEdit ? () => onEdit(item) : undefined}
+                >
                   <TableCell>
                     <div className="flex min-w-0 items-center gap-3">
                       <span
@@ -207,36 +214,46 @@ export function CatalogTable({
                   </TableCell>
 
                   <TableCell align="end">
-                    {/* Stop the click bubbling to the row, which would open the editor. */}
-                    <div onClick={(event) => event.stopPropagation()}>
-                      <Dropdown
-                        align="end"
-                        trigger={
-                          <Button variant="ghost" size="icon" aria-label={t('common.actions')}>
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        }
-                        items={[
-                          {
-                            key: 'edit',
-                            label: t('catalog.actions.edit'),
-                            icon: <Pencil />,
-                            onSelect: () => onEdit(item),
-                          },
-                          {
-                            key: 'status',
-                            label:
-                              item.status === 'active'
-                                ? t('catalog.actions.deactivate')
-                                : t('catalog.actions.activate'),
-                            icon: item.status === 'active' ? <PowerOff /> : <Power />,
-                            destructive: item.status === 'active',
-                            separated: true,
-                            onSelect: () => onToggleStatus(item),
-                          },
-                        ]}
-                      />
-                    </div>
+                    {(onEdit || onToggleStatus) && (
+                      /* Stop the click bubbling to the row, which would open the editor. */
+                      <div onClick={(event) => event.stopPropagation()}>
+                        <Dropdown
+                          align="end"
+                          trigger={
+                            <Button variant="ghost" size="icon" aria-label={t('common.actions')}>
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          }
+                          items={[
+                            ...(onEdit
+                              ? [
+                                  {
+                                    key: 'edit',
+                                    label: t('catalog.actions.edit'),
+                                    icon: <Pencil />,
+                                    onSelect: () => onEdit(item),
+                                  },
+                                ]
+                              : []),
+                            ...(onToggleStatus
+                              ? [
+                                  {
+                                    key: 'status',
+                                    label:
+                                      item.status === 'active'
+                                        ? t('catalog.actions.deactivate')
+                                        : t('catalog.actions.activate'),
+                                    icon: item.status === 'active' ? <PowerOff /> : <Power />,
+                                    destructive: item.status === 'active',
+                                    separated: Boolean(onEdit),
+                                    onSelect: () => onToggleStatus(item),
+                                  },
+                                ]
+                              : []),
+                          ]}
+                        />
+                      </div>
+                    )}
                   </TableCell>
                 </TableRow>
               );

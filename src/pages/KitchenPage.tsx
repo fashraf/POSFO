@@ -62,12 +62,16 @@ export default function KitchenPage() {
     return () => window.clearInterval(timer);
   }, []);
 
+  /* The board never holds completed orders, so asking for them means
+     fetching them; every other filter works on what is already loaded. */
+  const showCompleted = statusFilter === 'completed';
+
   const load = useCallback(async () => {
     setLoading(true);
-    const result = await safeCall(() => kitchenService.list());
+    const result = await safeCall(() => kitchenService.list({ includeCompleted: showCompleted }));
     if (result.ok) setOrders(result.data);
     setLoading(false);
-  }, []);
+  }, [showCompleted]);
 
   useEffect(() => {
     void load();
@@ -216,6 +220,9 @@ export default function KitchenPage() {
             { value: 'dine_in', label: t('kitchen.orderType.dine_in') },
             { value: 'takeaway', label: t('kitchen.orderType.takeaway') },
             { value: 'delivery', label: t('kitchen.orderType.delivery') },
+            /* Orders the till placed without a type — every order taken before
+               the checkout asked for one. */
+            { value: 'other', label: t('kitchen.orderType.other') },
           ]}
         />
       </div>
@@ -239,8 +246,13 @@ export default function KitchenPage() {
       ) : (
         /* Board columns on wide screens; a single dense grid below that, so a
            kitchen tablet is not stuck with three near-empty columns. */
-        <div className="grid min-h-0 flex-1 gap-2 overflow-y-auto lg:grid-cols-3">
-          {COLUMNS.map((column) => {
+        <div
+          className={cn(
+            'grid min-h-0 flex-1 gap-2 overflow-y-auto',
+            !showCompleted && 'lg:grid-cols-3',
+          )}
+        >
+          {(showCompleted ? (['completed'] as KitchenOrderStatus[]) : COLUMNS).map((column) => {
             const columnOrders = visible.filter((order) => order.status === column);
 
             return (

@@ -23,7 +23,13 @@ export type DataSubject =
   | 'ledger'
   | 'expenses'
   | 'users'
-  | 'devices';
+  | 'roles'
+  | 'devices'
+  | 'company'
+  | 'bills'
+  | 'settings'
+  | 'discounts'
+  | 'commission';
 
 /** Subjects that also change when another does. */
 const CASCADES: Partial<Record<DataSubject, DataSubject[]>> = {
@@ -34,6 +40,8 @@ const CASCADES: Partial<Record<DataSubject, DataSubject[]>> = {
   /* A sale moves stock, may take credit, and always posts. */
   sales: ['inventory', 'catalog', 'customers', 'ledger'],
   expenses: ['ledger'],
+  /* The user list shows each person's role name. */
+  roles: ['users'],
 };
 
 const versions = new Map<DataSubject, number>();

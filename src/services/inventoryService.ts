@@ -1,5 +1,11 @@
-import { USE_MOCKS } from '@/config/env';
-import { inventoryApi } from './api';
+import { activationApi, catalogApi, inventoryApi } from './api';
+import type {
+  PurchaseRow,
+  SaveVendorPayload,
+  VendorLedgerRow,
+  VendorPaymentRow,
+  VendorRow,
+} from './api/inventoryApi';
 import { invalidate } from './dataVersion';
 import { activeBranchForStock } from './apiCatalogService';
 import { toStockMovement } from './mappers/saleMappers';
@@ -13,37 +19,28 @@ import type {
   VendorLedgerEntry,
   VendorPayment,
 } from '@/types/inventory';
-import {
-  buildVendorLedger,
-  computePurchaseTotals,
-  weightedAverageCostH,
-} from '@/types/inventory';
-import { VAT_RATE } from '@/types/sales';
-import { isProduct, stockLevelOf } from '@/types/catalog';
-import type { Product, Vendor } from '@/types/catalog';
+import type { Vendor } from '@/types/catalog';
+import { en } from '@/i18n/locales/en';
+import { ar } from '@/i18n/locales/ar';
 import { HttpError } from './http';
-import { catalogService } from './catalogService';
-import { credit, debit, ledgerService } from './ledgerService';
-import { SEED_VENDORS } from './mock/seed';
-import { compareBy, delay, nextId, notFound, timestamp, validationFailed } from './mock/store';
+import { utc } from './mappers/time';
+import { compareBy, validationFailed } from './util';
 
 /**
  * Inventory and supply.
  *
- * Stock changes in exactly one place — `record` — so every movement lands in
- * the ledger. Sales, returns, purchases, and manual corrections all route
- * through it, which is why an item's history is complete rather than
+ * Stock changes only on the server. Sales, purchases and adjustments each go
+ * through one procedure that moves the level and writes the movement in the
+ * same transaction, which is why an item's history is complete rather than
  * whatever happened to get logged.
  */
 
-let movements: StockMovement[] = [];
-let purchases: Purchase[] = [];
-let vendorPayments: VendorPayment[] = [];
-let vendors: Vendor[] = [...SEED_VENDORS];
-let vendorBalances: Record<string, number> = {};
-let purchaseSequence = 117;
-let vendorPaymentSequence = 80;
-
+/**
+ * A movement as the screens describe one.
+ *
+ * Kept for the services barrel. Nothing records movements client-side any
+ * more — the server writes them as part of each stock-changing call.
+ */
 export interface RecordMovementInput {
   itemId: string;
   branchId?: string | null;
@@ -55,95 +52,85 @@ export interface RecordMovementInput {
   actor?: string;
 }
 
+/** The branch stock writes apply to. Refuses rather than guessing one. */
+function requireBranch(): string {
+  const branchId = activeBranchForStock();
+
+  if (!branchId) {
+    throw validationFailed({
+      branch: ['Select a branch first. Stock is held per branch.'],
+    });
+  }
+
+  return branchId;
+}
+
+/** Run `task` over `values`, a few at a time, so a long list is not one burst. */
+async function inBatches<T, R>(values: T[], size: number, task: (value: T) => Promise<R>) {
+  const results: R[] = [];
+  for (let start = 0; start < values.length; start += size) {
+    results.push(...(await Promise.all(values.slice(start, start + size).map(task))));
+  }
+  return results;
+}
+
 export const inventoryService = {
-  /** The single write path for stock. Returns the movement it appended. */
-  async record(input: RecordMovementInput): Promise<StockMovement | null> {
-    const item = await catalogService.get(input.itemId);
-    if (!isProduct(item) || !item.trackInventory) return null;
-
-    const updated = (await catalogService.adjustStock(input.itemId, input.quantity)) as Product;
-    const now = timestamp();
-
-    const movement: StockMovement = {
-      id: nextId('mov'),
-      itemId: input.itemId,
-      kind: input.kind,
-      quantity: input.quantity,
-      balanceAfter: updated.stockQuantity,
-      reference: input.reference,
-      note: input.note ?? '',
-      unitCostH: input.unitCostH ?? item.costH,
-      actor: input.actor ?? 'System',
-      branchId: input.branchId ?? null,
-      occurredAt: now,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    movements = [movement, ...movements];
-    return movement;
-  },
-
   /** Movement history for one item, newest first. */
   async movementsFor(itemId: string, limit = 50): Promise<StockMovement[]> {
-    if (!USE_MOCKS) {
-      const rows = await inventoryApi.movements(itemId, { take: limit });
-      return rows.map(toStockMovement);
-    }
-
-    await delay(180);
-    return movements.filter((movement) => movement.itemId === itemId).slice(0, limit);
+    const rows = await inventoryApi.movements(itemId, {
+      branchId: activeBranchForStock(),
+      take: limit,
+    });
+    return rows.map(toStockMovement);
   },
 
   async recentMovements(limit = 20): Promise<StockMovement[]> {
-    if (!USE_MOCKS) {
-      /* There is no cross-item movement endpoint, and adding one would mean a
-         new route for a dashboard strip. Recent low-stock items and their
-         movements cover the same need from routes that already exist. */
-      const levels = await inventoryApi.levels({ pageSize: 10 });
-      const perItem = await Promise.all(
-        levels.items
-          .slice(0, 5)
-          .map((row) => inventoryApi.movements(row.itemId, { take: 5 })),
-      );
+    /* There is no cross-item movement endpoint, and adding one would mean a
+       new route for a dashboard strip. Recent low-stock items and their
+       movements cover the same need from routes that already exist. */
+    const levels = await inventoryApi.levels({ pageSize: 10 });
+    const perItem = await Promise.all(
+      levels.items
+        .slice(0, 5)
+        .map((row) => inventoryApi.movements(row.itemId, { take: 5 })),
+    );
 
-      return perItem
-        .flat()
-        .map(toStockMovement)
-        .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
-        .slice(0, limit);
-    }
-
-    await delay(160);
-    return movements.slice(0, limit);
+    return perItem
+      .flat()
+      .map(toStockMovement)
+      .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
+      .slice(0, limit);
   },
 
   /**
    * A manual correction. The reason is mandatory because "the number was
    * wrong" is not an audit trail, and reducing reasons cannot be used to add
    * stock — a shortage that increases your count is a different event.
+   *
+   * The server records who made it from the token, so no actor is passed.
    */
   async adjust(input: {
     itemId: string;
     quantity: number;
     reason: AdjustmentReason;
     note: string;
-    actor: string;
   }): Promise<StockMovement> {
-    await delay(340);
-
     if (input.quantity === 0) {
       throw validationFailed({ quantity: ['Enter a quantity above or below zero.'] });
     }
 
-    if (input.reason === 'other' && !input.note.trim()) {
+    const note = input.note.trim();
+
+    if (input.reason === 'other' && !note) {
       throw validationFailed({
         note: ['Describe what happened when the reason is "Other".'],
       });
     }
 
-    const item = await catalogService.get(input.itemId);
-    if (!isProduct(item) || !item.trackInventory) {
+    const branchId = requireBranch();
+    const item = await catalogApi.item(input.itemId, branchId);
+
+    if (item.kind !== 'product' || !item.tracksStock) {
       throw new HttpError({
         status: 409,
         code: 'not_tracked',
@@ -151,48 +138,73 @@ export const inventoryService = {
       });
     }
 
-    if (item.stockQuantity + input.quantity < 0) {
+    /* The route takes the new absolute quantity: the procedure posts the
+       difference against what is really on hand. Read just now, so the delta
+       is applied to the current figure rather than to what the screen showed. */
+    if (item.quantity + input.quantity < 0) {
       throw new HttpError({
         status: 422,
         code: 'negative_stock',
-        message: `You cannot remove more than the ${item.stockQuantity} on hand.`,
-        fieldErrors: { quantity: [`At most ${item.stockQuantity} can be removed.`] },
+        message: `You cannot remove more than the ${item.quantity} on hand.`,
+        fieldErrors: { quantity: [`At most ${item.quantity} can be removed.`] },
       });
     }
 
-    const movement = await inventoryService.record({
-      itemId: input.itemId,
-      kind: 'adjustment',
-      quantity: input.quantity,
-      reference: input.reason,
-      note: input.note,
-      actor: input.actor,
+    /* The reason the person chose, in both languages, with their note. */
+    const label = (dictionary: typeof en) =>
+      dictionary.inventory.adjustModal.reasons[input.reason];
+
+    await inventoryApi.adjust(input.itemId, {
+      branchId,
+      newQuantity: item.quantity + input.quantity,
+      reasonEn: note ? `${label(en)}: ${note}` : label(en),
+      reasonAr: note ? `${label(ar)}: ${note}` : label(ar),
     });
 
+    invalidate('inventory');
+
+    /* The movement the server just wrote, rather than one assembled here. */
+    const [movement] = await inventoryService.movementsFor(input.itemId, 1);
+
     if (!movement) {
-      throw new HttpError({ status: 500, code: 'adjust_failed', message: 'Adjustment failed.' });
+      throw new HttpError({
+        status: 500,
+        code: 'adjust_failed',
+        message: 'The adjustment was saved, but its movement could not be read back.',
+      });
     }
 
     return movement;
   },
 
   async summary(): Promise<InventorySummary> {
-    await delay(180);
+    const branchId = activeBranchForStock();
+    const levels = await inventoryApi.allLevels({ branchId });
 
-    const page = await catalogService.list({ pageSize: 1000 });
-    const tracked = page.items.filter(isProduct).filter((item) => item.trackInventory);
+    /* Written off: the cost value of every manual adjustment that reduced
+       stock. Each item's history is read separately because there is no
+       cross-item movement route; the route returns up to 500 per item, which
+       covers far more than one period of corrections. */
+    const histories = await inBatches(levels, 8, (row) =>
+      inventoryApi.movements(row.itemId, { branchId, take: 500 }),
+    );
 
-    const shrinkageH = movements
+    const shrinkageH = histories
+      .flat()
+      .map(toStockMovement)
       .filter((movement) => movement.kind === 'adjustment' && movement.quantity < 0)
       .reduce((sum, movement) => sum + Math.abs(movement.quantity) * movement.unitCostH, 0);
 
     return {
-      totalValueH: tracked.reduce((sum, item) => sum + item.stockQuantity * item.costH, 0),
-      retailValueH: tracked.reduce((sum, item) => sum + item.stockQuantity * item.priceH, 0),
-      trackedItems: tracked.length,
-      lowStock: tracked.filter((item) => stockLevelOf(item) === 'low_stock').length,
-      outOfStock: tracked.filter((item) => stockLevelOf(item) === 'out_of_stock').length,
-      shrinkageH,
+      totalValueH: levels.reduce((sum, row) => sum + row.stockValueH, 0),
+      retailValueH: levels.reduce(
+        (sum, row) => sum + Math.max(0, row.quantity) * row.priceH,
+        0,
+      ),
+      trackedItems: levels.length,
+      lowStock: levels.filter((row) => row.stockStatus === 'low').length,
+      outOfStock: levels.filter((row) => row.stockStatus === 'out').length,
+      shrinkageH: Math.round(shrinkageH),
     };
   },
 };
@@ -210,158 +222,123 @@ export interface ReceiveStockInput {
   receivedBy: string;
 }
 
+function toPurchase(row: PurchaseRow): Purchase {
+  return {
+    id: row.id,
+    reference: row.reference,
+    vendorId: row.vendorId,
+    vendorNameAr: row.vendorNameAr ?? '',
+    vendorNameEn: row.vendorNameEn ?? '',
+    branchId: row.branchId ?? null,
+    vendorInvoiceNumber: row.vendorInvoiceNumber ?? '',
+    lines: (row.lines ?? []).map((line) => ({
+      itemId: line.itemId,
+      nameAr: line.nameAr,
+      nameEn: line.nameEn,
+      quantity: Number(line.quantity),
+      unitCostH: line.unitCostH,
+    })),
+    subtotalH: row.subtotalH,
+    taxH: row.taxH,
+    totalH: row.totalH,
+    paidOnReceipt: row.paidOnReceipt,
+    paidH: row.paidH ?? 0,
+    outstandingH: row.outstandingH ?? 0,
+    paymentStatus: row.paymentStatus,
+    status: row.status,
+    note: row.note ?? '',
+    receivedBy: row.receivedBy ?? '',
+    receivedAt: utc(row.receivedAt),
+    createdAt: utc(row.createdAt),
+    updatedAt: utc(row.updatedAt),
+  };
+}
+
 export const purchaseService = {
   /**
    * Receive a delivery: stock goes up, each item's cost is re-averaged, and
    * unless it was paid on the spot the total lands on the vendor's balance.
    */
   async receive(input: ReceiveStockInput): Promise<Purchase> {
-    if (!USE_MOCKS) {
-      if (input.lines.length === 0) {
-        throw validationFailed({ lines: ['Add at least one item to the delivery.'] });
-      }
-
-      const branchId = activeBranchForStock();
-
-      if (!branchId) {
-        throw validationFailed({
-          branch: ['Select a branch first. Stock is held per branch, so a delivery needs one.'],
-        });
-      }
-
-      /* One call. The procedure writes the purchase, its lines, the re-averaged
-         cost, the stock level, the movement and the ledger entry in a single
-         transaction — splitting it here would let a dropped connection leave
-         stock raised for a delivery that was never recorded. */
-      const received = await inventoryApi.receive({
-        vendorId: input.vendorId,
-        branchId,
-        invoiceNumber: input.vendorInvoiceNumber || null,
-        vatRate: 15,
-        paidOnReceipt: input.paidOnReceipt,
-        lines: input.lines.map((line) => ({
-          itemId: line.itemId,
-          quantity: line.quantity,
-          unitCostH: line.unitCostH,
-        })),
-      });
-
-      const totals = computePurchaseTotals(input.lines, VAT_RATE);
-
-      /* Confirmed. Announce before returning, so the list the caller
-         navigates to reloads rather than showing the pre-delivery stock. */
-      invalidate('inventory', 'vendors');
-
-      return {
-        id: received.purchaseId,
-        reference: received.reference,
-        vendorId: input.vendorId,
-        vendorInvoiceNumber: input.vendorInvoiceNumber,
-        lines: input.lines,
-        subtotalH: totals.subtotalH,
-        taxH: totals.taxH,
-        totalH: totals.totalH,
-        paidOnReceipt: input.paidOnReceipt,
-        status: 'received',
-        note: input.note,
-        receivedBy: input.receivedBy,
-        receivedAt: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      } as Purchase;
-    }
-
-    await delay(460);
-
     if (input.lines.length === 0) {
       throw validationFailed({ lines: ['Add at least one item to the delivery.'] });
     }
 
-    const vendor = vendors.find((candidate) => candidate.id === input.vendorId);
-    if (!vendor) throw notFound('Vendor', input.vendorId);
+    const branchId = activeBranchForStock();
 
-    const invalid = input.lines.find((line) => line.quantity <= 0 || line.unitCostH < 0);
-    if (invalid) {
+    if (!branchId) {
       throw validationFailed({
-        lines: ['Every line needs a quantity above zero and a cost of zero or more.'],
+        branch: ['Select a branch first. Stock is held per branch, so a delivery needs one.'],
       });
     }
 
-    const totals = computePurchaseTotals(input.lines, VAT_RATE);
-    const now = timestamp();
-    purchaseSequence += 1;
-
-    const purchase: Purchase = {
-      id: nextId('pur'),
-      reference: `GRN-${purchaseSequence}`,
+    /* One call. The procedure writes the purchase, its lines, the re-averaged
+       cost, the stock level, the movement and the ledger entry in a single
+       transaction — splitting it here would let a dropped connection leave
+       stock raised for a delivery that was never recorded. */
+    const received = await inventoryApi.receive({
       vendorId: input.vendorId,
-      vendorInvoiceNumber: input.vendorInvoiceNumber.trim(),
-      lines: input.lines,
-      subtotalH: totals.subtotalH,
-      taxH: totals.taxH,
-      totalH: totals.totalH,
+      branchId,
+      invoiceNumber: input.vendorInvoiceNumber || null,
+      vatRate: 15,
       paidOnReceipt: input.paidOnReceipt,
-      status: 'received',
-      note: input.note.trim(),
-      receivedBy: input.receivedBy,
-      receivedAt: now,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    purchases = [purchase, ...purchases];
-
-    for (const line of input.lines) {
-      const item = await catalogService.get(line.itemId);
-
-      if (isProduct(item) && item.trackInventory) {
-        /* Re-average before the movement, so the movement records the new cost. */
-        const newCostH = weightedAverageCostH(
-          item.stockQuantity,
-          item.costH,
-          line.quantity,
-          line.unitCostH,
-        );
-        await catalogService.setCost(line.itemId, newCostH);
-
-        await inventoryService.record({
-          itemId: line.itemId,
-          kind: 'purchase',
-          quantity: line.quantity,
-          reference: purchase.reference,
-          unitCostH: line.unitCostH,
-          actor: input.receivedBy,
-        });
-      }
-    }
-
-    if (!input.paidOnReceipt) {
-      vendorBalances[input.vendorId] = (vendorBalances[input.vendorId] ?? 0) + totals.totalH;
-    }
-
-    /* Stock arriving is an asset swap, not a cost — it becomes a cost when it
-       is sold, via COGS. */
-    await ledgerService.post({
-      kind: 'purchase',
-      sourceReference: purchase.reference,
-      description: `Delivery from ${vendor.nameEn}`,
-      actor: input.receivedBy,
-      lines: [
-        debit('1200', totals.subtotalH, 'Inventory'),
-        debit('1300', totals.taxH, 'Input VAT'),
-        credit(input.paidOnReceipt ? '1000' : '2000', totals.totalH, vendor.nameEn),
-      ],
+      note: input.note.trim() || null,
+      lines: input.lines.map((line) => ({
+        itemId: line.itemId,
+        quantity: line.quantity,
+        unitCostH: line.unitCostH,
+      })),
     });
 
-    return purchase;
+    /* Confirmed. Announce before returning, so the list the caller
+       navigates to reloads rather than showing the pre-delivery stock. */
+    invalidate('inventory', 'vendors');
+
+    /* The purchase as the server stored it — totals, VAT and timestamps are
+       its figures, not a recomputation of what was sent. */
+    return toPurchase(await inventoryApi.purchase(received.purchaseId));
   },
 
-  async list(vendorId?: string): Promise<Purchase[]> {
-    await delay(180);
-    const filtered = vendorId
-      ? purchases.filter((purchase) => purchase.vendorId === vendorId)
-      : purchases;
-    return compareBy(filtered, 'receivedAt', 'desc');
+  /**
+   * Deliveries, newest first; every page, optionally for one vendor or only
+   * those still owing (`unpaid` / `partial`).
+   */
+  async list(
+    vendorId?: string,
+    options: { paymentStatus?: 'paid' | 'partial' | 'unpaid' } = {},
+  ): Promise<Purchase[]> {
+    const all: PurchaseRow[] = [];
+    const pageSize = 100;
+
+    for (let page = 1; ; page += 1) {
+      const result = await inventoryApi.purchases({
+        vendorId,
+        paymentStatus: options.paymentStatus,
+        page,
+        pageSize,
+      });
+      all.push(...result.items);
+      if (result.items.length < pageSize || all.length >= result.totalCount) break;
+    }
+
+    return compareBy(all.map(toPurchase), 'receivedAt', 'desc');
+  },
+
+  /** Deliveries not yet fully paid, newest first. */
+  async unsettled(vendorId?: string): Promise<Purchase[]> {
+    const [unpaid, partial] = await Promise.all([
+      purchaseService.list(vendorId, { paymentStatus: 'unpaid' }),
+      purchaseService.list(vendorId, { paymentStatus: 'partial' }),
+    ]);
+    return compareBy(
+      [...unpaid, ...partial].filter((purchase) => purchase.outstandingH > 0),
+      'receivedAt',
+      'desc',
+    );
+  },
+
+  async get(id: string): Promise<Purchase> {
+    return toPurchase(await inventoryApi.purchase(id));
   },
 };
 
@@ -373,186 +350,185 @@ export interface VendorInput {
   email: string;
   vatNumber: string;
   city: string;
+  paymentTermDays?: number | null;
+  status?: 'active' | 'inactive';
+}
+
+export type VendorWithBalance = Vendor & {
+  balanceH: number;
+  /** Lifetime purchases, paid on receipt included. */
+  purchasedH: number;
+  paidH: number;
+  purchaseCount: number;
+  paymentTermDays: number;
+  lastPurchaseAt: string | null;
+};
+
+function toVendor(row: VendorRow): VendorWithBalance {
+  return {
+    id: row.vendorId,
+    nameAr: row.nameAr,
+    nameEn: row.nameEn,
+    contactPerson: row.contactPerson ?? '',
+    phone: row.phone ?? '',
+    email: row.email ?? '',
+    vatNumber: row.vatNumber ?? '',
+    city: row.city ?? '',
+    status: row.status ?? (row.isActive ? 'active' : 'inactive'),
+    balanceH: row.balanceH ?? 0,
+    purchasedH: row.purchasedH ?? 0,
+    paidH: row.paidH ?? 0,
+    purchaseCount: row.purchaseCount ?? 0,
+    paymentTermDays: row.paymentTermDays ?? 0,
+    lastPurchaseAt: row.lastPurchaseAt ? utc(row.lastPurchaseAt) : null,
+    createdAt: utc(row.createdAt),
+    updatedAt: utc(row.updatedAt),
+  };
+}
+
+function toVendorPayload(input: VendorInput): SaveVendorPayload {
+  return {
+    nameAr: input.nameAr.trim(),
+    nameEn: input.nameEn.trim(),
+    contactPerson: input.contactPerson.trim() || null,
+    phone: input.phone.trim(),
+    email: input.email.trim() || null,
+    vatNumber: input.vatNumber.trim() || null,
+    city: input.city.trim() || null,
+    paymentTermDays: input.paymentTermDays ?? null,
+    status: input.status,
+  };
+}
+
+function toVendorPayment(row: VendorPaymentRow): VendorPayment {
+  return {
+    id: row.id,
+    reference: row.reference,
+    vendorId: row.vendorId,
+    amountH: row.amountH,
+    method: row.method,
+    note: row.note ?? '',
+    paidBy: row.paidBy ?? '',
+    paidAt: utc(row.paidAt),
+    branchId: row.branchId ?? null,
+    entryId: row.entryId ?? null,
+    allocations: row.allocations ?? [],
+    createdAt: utc(row.createdAt),
+    updatedAt: utc(row.updatedAt),
+  };
+}
+
+function toLedgerEntry(row: VendorLedgerRow): VendorLedgerEntry {
+  return {
+    id: row.id,
+    kind: row.kind,
+    reference: row.reference,
+    date: utc(row.date),
+    amountH: row.amountH,
+    balanceH: row.balanceH,
+    method: row.method ?? null,
+    vendorInvoiceNumber: row.vendorInvoiceNumber ?? null,
+    note: row.note ?? null,
+  };
 }
 
 export const vendorService = {
-  async list(): Promise<(Vendor & { balanceH: number })[]> {
-    await delay(160);
-    return compareBy(vendors, 'nameEn', 'asc').map((vendor) => ({
-      ...vendor,
-      balanceH: vendorBalances[vendor.id] ?? 0,
-    }));
+  /**
+   * Vendors, each with what is owed on unpaid deliveries. Active only unless
+   * `includeInactive` is set.
+   */
+  async list(options: { includeInactive?: boolean } = {}): Promise<VendorWithBalance[]> {
+    const rows = await inventoryApi.vendors({ includeInactive: options.includeInactive });
+    return compareBy(rows.map(toVendor), 'nameEn', 'asc');
   },
 
-  async get(id: string): Promise<Vendor & { balanceH: number }> {
-    await delay(120);
-    const vendor = vendors.find((candidate) => candidate.id === id);
-    if (!vendor) throw notFound('Vendor', id);
-    return { ...vendor, balanceH: vendorBalances[id] ?? 0 };
+  async get(id: string): Promise<VendorWithBalance> {
+    return toVendor(await inventoryApi.vendor(id));
   },
 
-  async create(input: VendorInput): Promise<Vendor> {
-    await delay(340);
-
-    const errors: Record<string, string[]> = {};
-    if (!input.nameAr.trim()) errors.nameAr = ['Arabic name is required.'];
-    if (!input.nameEn.trim()) errors.nameEn = ['English name is required.'];
-    if (!input.phone.trim()) {
-      errors.phone = ['A phone number is required so you can chase a delivery.'];
-    }
-
-    const vat = input.vatNumber.trim();
-    if (vat && !/^\d{15}$/.test(vat)) {
-      errors.vatNumber = ['A Saudi VAT number is exactly 15 digits, or leave it empty.'];
-    }
-    if (vat && vendors.some((vendor) => vendor.vatNumber === vat)) {
-      errors.vatNumber = ['Another vendor already uses this VAT number.'];
-    }
-
-    if (input.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email.trim())) {
-      errors.email = ['Enter a valid email address, or leave it empty.'];
-    }
-
-    if (Object.keys(errors).length > 0) throw validationFailed(errors);
-
-    const now = timestamp();
-    const created: Vendor = {
-      id: nextId('ven'),
-      nameAr: input.nameAr.trim(),
-      nameEn: input.nameEn.trim(),
-      contactPerson: input.contactPerson.trim(),
-      phone: input.phone.trim(),
-      email: input.email.trim(),
-      vatNumber: vat,
-      city: input.city.trim(),
-      status: 'active',
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    vendors = [created, ...vendors];
+  /** The server validates names, phone, VAT number (15 digits) and email. */
+  async create(input: VendorInput): Promise<VendorWithBalance> {
+    const created = toVendor(await inventoryApi.createVendor(toVendorPayload(input)));
+    invalidate('vendors');
     return created;
   },
 
-  async setStatus(id: string, status: 'active' | 'inactive'): Promise<Vendor> {
-    await delay(260);
-
-    const existing = vendors.find((candidate) => candidate.id === id);
-    if (!existing) throw notFound('Vendor', id);
-
-    if (status === 'inactive' && (vendorBalances[id] ?? 0) > 0) {
-      throw new HttpError({
-        status: 409,
-        code: 'outstanding_balance',
-        message: 'You still owe this vendor. Settle the balance before deactivating them.',
-      });
-    }
-
-    const updated: Vendor = { ...existing, status, updatedAt: timestamp() };
-    vendors = vendors.map((vendor) => (vendor.id === id ? updated : vendor));
+  async update(id: string, input: VendorInput): Promise<VendorWithBalance> {
+    const updated = toVendor(await inventoryApi.updateVendor(id, toVendorPayload(input)));
+    invalidate('vendors');
     return updated;
   },
 
-  /** Pay a supplier, reducing what you owe them. */
+  /**
+   * Take a vendor out of circulation, or put one back. The server refuses
+   * while something depends on the vendor and says what; that arrives as
+   * DeactivationBlocked with a message written for the person reading it.
+   */
+  async setStatus(id: string, status: 'active' | 'inactive'): Promise<VendorWithBalance> {
+    await activationApi.set('vendor', id, status === 'active');
+    invalidate('vendors');
+    return vendorService.get(id);
+  },
+
+  /**
+   * Pay a supplier, reducing what you owe them. The server settles the oldest
+   * unpaid deliveries first (or only `purchaseId`) and posts the entry; it
+   * refuses more than is owed with 422 overpayment.
+   */
   async recordPayment(input: {
     vendorId: string;
     amountH: number;
     method: 'cash' | 'card' | 'bank';
     note: string;
-    paidBy: string;
+    purchaseId?: string | null;
+    branchId?: string | null;
   }): Promise<VendorPayment> {
-    await delay(360);
-
-    const owed = vendorBalances[input.vendorId] ?? 0;
-
     if (input.amountH <= 0) {
       throw validationFailed({ amountH: ['Enter an amount greater than zero.'] });
     }
-    if (input.amountH > owed) {
-      throw new HttpError({
-        status: 422,
-        code: 'overpayment',
-        message: 'That is more than you owe this vendor. Reduce the amount.',
-        fieldErrors: { amountH: ['Cannot exceed the outstanding balance.'] },
-      });
-    }
 
-    const now = timestamp();
-    vendorPaymentSequence += 1;
-
-    const payment: VendorPayment = {
-      id: nextId('vpy'),
-      reference: `VP-${vendorPaymentSequence}`,
-      vendorId: input.vendorId,
+    const payment = await inventoryApi.payVendor(input.vendorId, {
       amountH: input.amountH,
       method: input.method,
-      note: input.note.trim(),
-      paidBy: input.paidBy,
-      paidAt: now,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    vendorPayments = [payment, ...vendorPayments];
-
-    await ledgerService.post({
-      kind: 'supplier_payment',
-      sourceReference: payment.reference,
-      description: 'Vendor payment',
-      actor: input.paidBy,
-      lines: [
-        debit('2000', input.amountH, 'Accounts payable'),
-        credit(input.method === 'cash' ? '1000' : '1100', input.amountH, input.method),
-      ],
+      note: input.note.trim() || null,
+      purchaseId: input.purchaseId ?? null,
+      branchId: input.branchId ?? activeBranchForStock() ?? null,
     });
-    vendorBalances = {
-      ...vendorBalances,
-      [input.vendorId]: owed - input.amountH,
-    };
 
-    return payment;
+    invalidate('vendors', 'ledger');
+    return toVendorPayment(payment);
   },
 
-  /** Purchases and payments in date order, with a running balance. */
+  async payments(vendorId: string): Promise<VendorPayment[]> {
+    return (await inventoryApi.vendorPayments(vendorId)).map(toVendorPayment);
+  },
+
+  /**
+   * Purchases on credit and payments, oldest first, with the running balance.
+   * Paid-on-receipt deliveries are left out, so the last balance is the
+   * vendor's balance.
+   */
   async ledger(vendorId: string): Promise<VendorLedgerEntry[]> {
-    await delay(200);
-
-    const purchaseEntries = purchases
-      .filter((purchase) => purchase.vendorId === vendorId && !purchase.paidOnReceipt)
-      .map((purchase) => ({
-        id: purchase.id,
-        kind: 'purchase' as const,
-        reference: purchase.reference,
-        date: purchase.receivedAt,
-        amountH: purchase.totalH,
-      }));
-
-    const paymentEntries = vendorPayments
-      .filter((payment) => payment.vendorId === vendorId)
-      .map((payment) => ({
-        id: payment.id,
-        kind: 'payment' as const,
-        reference: payment.reference,
-        date: payment.paidAt,
-        amountH: -payment.amountH,
-      }));
-
-    return buildVendorLedger([...purchaseEntries, ...paymentEntries]);
+    return (await inventoryApi.vendorLedger(vendorId)).map(toLedgerEntry);
   },
 
-  async summary(): Promise<{
+  /** Lifetime figures unless a period is given; `payableH` is always now. */
+  async summary(period: { from?: string; to?: string } = {}): Promise<{
     payableH: number;
     activeVendors: number;
     withBalance: number;
     purchasedH: number;
+    purchaseCount: number;
+    paidH: number;
   }> {
-    await delay(140);
-
+    const row = await inventoryApi.vendorSummary(period);
     return {
-      payableH: Object.values(vendorBalances).reduce((sum, value) => sum + Math.max(0, value), 0),
-      activeVendors: vendors.filter((vendor) => vendor.status === 'active').length,
-      withBalance: Object.values(vendorBalances).filter((value) => value > 0).length,
-      purchasedH: purchases.reduce((sum, purchase) => sum + purchase.totalH, 0),
+      payableH: row.payableH,
+      activeVendors: row.activeVendors,
+      withBalance: row.withBalance,
+      purchasedH: row.purchasedH,
+      purchaseCount: row.purchaseCount,
+      paidH: row.paidH,
     };
   },
 };

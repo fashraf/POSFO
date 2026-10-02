@@ -1,4 +1,5 @@
 import type { ID } from '@/types';
+import { utc } from './time';
 import type { Sale, SaleLine, SalePayment, SaleStatus, PaymentMethod } from '@/types/sales';
 
 /**
@@ -54,10 +55,9 @@ function strOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+/** A server timestamp (UTC, no trailing Z) as ISO; empty when absent. */
 function iso(value: unknown): string {
-  if (typeof value !== 'string') return new Date().toISOString();
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
+  return typeof value === 'string' ? utc(value) : '';
 }
 
 /*---------------------------------------------------------------------- sales */
@@ -207,6 +207,8 @@ export function toJournalEntry(row: Row): import('@/types/finance').JournalEntry
     branchId: strOrNull(pick(row, 'branchId')) as ID | null,
     reversesEntryId: strOrNull(pick(row, 'reversesEntryId')) as ID | null,
     reversedByEntryId: strOrNull(pick(row, 'reversedByEntryId')) as ID | null,
+    totalDebitH: numOrNull(pick(row, 'totalDebitH')) ?? undefined,
+    totalCreditH: numOrNull(pick(row, 'totalCreditH')) ?? undefined,
     createdAt: iso(pick(row, 'createdAtUtc') ?? pick(row, 'postedAtUtc')),
     updatedAt: iso(pick(row, 'postedAtUtc')),
   };

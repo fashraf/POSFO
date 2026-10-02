@@ -31,12 +31,11 @@ import { useSession } from '@/contexts/SessionContext';
 import { useI18n, useTranslation } from '@/i18n';
 import { cn } from '@/lib/cn';
 import { formatCurrency, formatDate } from '@/lib/format';
-import { ledgerService, recurringService, safeCall } from '@/services';
-import { accountBalanceH, availableCashH, daysUntil, dueUrgency, monthKey } from '@/types/finance';
-import type { DueUrgency, JournalEntry, RecurringPayment } from '@/types/finance';
+import { expenseCategoryService, expenseService, ledgerService, recurringService, safeCall } from '@/services';
+import type { FinanceSummary } from '@/services/api';
+import { availableCashH, daysUntil, dueUrgency } from '@/types/finance';
+import type { DueUrgency, ExpenseCategory, RecurringPayment } from '@/types/finance';
 import type { BadgeTone } from '@/components/ui';
-
-const EXPENSE_ACCOUNTS = ['6000', '6100', '6200', '6300', '5200'];
 
 const URGENCY_TONES: Record<DueUrgency, BadgeTone> = {
   normal: 'neutral',
@@ -45,13 +44,15 @@ const URGENCY_TONES: Record<DueUrgency, BadgeTone> = {
   overdue: 'danger',
 };
 
-const METHOD_COLOURS: Record<string, string> = {
-  cash: '#1F7A63',
-  card: '#1D6FA5',
-  credit: '#B26A00',
-};
-
 const DONUT_COLOURS = ['#1F7A63', '#1D6FA5', '#B26A00', '#7A4FA3', '#9AA4B0', '#4B5561'];
+
+/* One colour per method, the same in every month. */
+const METHOD_COLOURS: Record<'cash' | 'card' | 'credit' | 'bank', string> = {
+  cash: DONUT_COLOURS[0],
+  card: DONUT_COLOURS[1],
+  credit: DONUT_COLOURS[2],
+  bank: DONUT_COLOURS[3],
+};
 
 function monthsBack(count: number): string[] {
   const months: string[] = [];
@@ -74,19 +75,37 @@ export default function FinanceOverviewPage() {
   const { language } = useI18n();
   const { activeBranch } = useSession();
 
-  const [entries, setEntries] = useState<JournalEntry[]>([]);
+  const [summaries, setSummaries] = useState<(FinanceSummary & { month: string })[]>([]);
+  const [recognised, setRecognised] = useState<{ categoryId: string; amountH: number }[]>([]);
+  const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [upcoming, setUpcoming] = useState<RecurringPayment[]>([]);
   const [loading, setLoading] = useState(true);
   const [range, setRange] = useState<string | null>('6');
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [entryResult, upcomingResult] = await Promise.all([
-      safeCall(() => ledgerService.all(activeBranch?.id ?? null)),
-      safeCall(() => recurringService.upcoming(30)),
+    const branchId = activeBranch?.id ?? null;
+    const thisMonth = new Date().toISOString().slice(0, 7);
+
+    /* Twelve months covers the widest range, so changing it needs no reload.
+       Oldest first, which is the order the chart reads in. */
+    const [summaryResult, upcomingResult, recognisedResult, categoryResult] = await Promise.all([
+      safeCall(() => ledgerService.monthSummaries(monthsBack(12), branchId)),
+      safeCall(() => recurringService.upcoming(30, branchId)),
+      safeCall(() => expenseService.recognitionFor(thisMonth, branchId)),
+      safeCall(() => expenseCategoryService.list()),
     ]);
-    if (entryResult.ok) setEntries(entryResult.data);
+    if (summaryResult.ok) setSummaries(summaryResult.data);
     if (upcomingResult.ok) setUpcoming(upcomingResult.data);
+    if (recognisedResult.ok) {
+      setRecognised(
+        recognisedResult.data.map((entry) => ({
+          categoryId: entry.categoryId,
+          amountH: entry.amountH,
+        })),
+      );
+    }
+    if (categoryResult.ok) setCategories(categoryResult.data);
     setLoading(false);
   }, [activeBranch]);
 
@@ -95,42 +114,37 @@ export default function FinanceOverviewPage() {
   }, [load]);
 
   const figures = useMemo(() => {
-    const thisMonth = new Date().toISOString().slice(0, 7);
-    const previous = monthsBack(2)[0];
+    const [previous, thisMonth] = monthsBack(2);
 
     const forMonth = (month: string) => {
-      const inMonth = entries.filter((entry) => monthKey(entry.postedAt) === month);
-      const salesH = accountBalanceH(inMonth, '4100') - accountBalanceH(inMonth, '4200');
-      const expensesH = EXPENSE_ACCOUNTS.reduce(
-        (sum, code) => sum + accountBalanceH(inMonth, code),
-        0,
-      );
-      return { salesH, expensesH, netH: salesH - expensesH - accountBalanceH(inMonth, '5100') };
+      const summary = summaries.find((candidate) => candidate.month === month);
+      const salesH = summary?.revenueH ?? 0;
+      const expensesH = summary?.expensesH ?? 0;
+      return { salesH, expensesH, netH: salesH - expensesH - (summary?.cogsH ?? 0) };
     };
 
     const current = forMonth(thisMonth);
     const prior = forMonth(previous);
 
-    const cashOnHandH = accountBalanceH(entries, '1000') + accountBalanceH(entries, '1100');
+    /* Cash and bank, all time — the summary reads these as balances, not as
+       the month's movement. */
+    const cashOnHandH = summaries.find((summary) => summary.month === thisMonth)?.cashH ?? 0;
     const cash = availableCashH(
       cashOnHandH,
       upcoming.map((payment) => ({ amountH: payment.amountH, dueOn: payment.nextDueOn })),
     );
 
     return { current, prior, cashOnHandH, ...cash };
-  }, [entries, upcoming]);
+  }, [summaries, upcoming]);
 
   /* Sales against expenses, month by month. */
   const comparison = useMemo(() => {
     const months = monthsBack(Number(range ?? 6));
 
     return months.map((month) => {
-      const inMonth = entries.filter((entry) => monthKey(entry.postedAt) === month);
-      const salesH = accountBalanceH(inMonth, '4100') - accountBalanceH(inMonth, '4200');
-      const expensesH = EXPENSE_ACCOUNTS.reduce(
-        (sum, code) => sum + accountBalanceH(inMonth, code),
-        0,
-      );
+      const summary = summaries.find((candidate) => candidate.month === month);
+      const salesH = summary?.revenueH ?? 0;
+      const expensesH = summary?.expensesH ?? 0;
 
       return {
         label: month.slice(5),
@@ -139,54 +153,43 @@ export default function FinanceOverviewPage() {
         net: (salesH - expensesH) / 100,
       };
     });
-  }, [entries, range]);
+  }, [summaries, range]);
 
-  /* How customers actually paid, read off the accounts each method lands in. */
-  const paymentMix = useMemo(() => {
-    const thisMonth = new Date().toISOString().slice(0, 7);
-    const inMonth = entries.filter(
-      (entry) => monthKey(entry.postedAt) === thisMonth && entry.kind === 'sale',
-    );
-
-    const sumDebits = (code: string) =>
-      inMonth
-        .flatMap((entry) => entry.lines)
-        .filter((line) => line.accountCode === code)
-        .reduce((sum, line) => sum + line.debitH, 0);
-
-    return [
-      { name: t('pos.payment.cash'), value: sumDebits('1000') / 100, key: 'cash' },
-      { name: t('pos.payment.card'), value: sumDebits('1150') / 100, key: 'card' },
-      { name: t('pos.payment.credit'), value: sumDebits('1400') / 100, key: 'credit' },
-    ].filter((slice) => slice.value > 0);
-  }, [entries, t]);
-
-  /* Expense split by category, from the recognition entries. */
+  /* This month's share of each recorded expense, by category — what the cost
+     belongs to, not when it was paid. */
   const breakdown = useMemo(() => {
-    const thisMonth = new Date().toISOString().slice(0, 7);
-    const inMonth = entries.filter(
-      (entry) =>
-        monthKey(entry.postedAt) === thisMonth &&
-        (entry.kind === 'expense' || entry.kind === 'expense_recognition'),
-    );
-
     const totals = new Map<string, number>();
 
-    for (const entry of inMonth) {
-      for (const line of entry.lines) {
-        if (!EXPENSE_ACCOUNTS.includes(line.accountCode) || line.debitH === 0) continue;
-        /* The description carries the category name, since categories are a
-           business concept rather than a separate ledger account. */
-        const label = entry.description.split('—')[0].trim();
-        totals.set(label, (totals.get(label) ?? 0) + line.debitH);
-      }
+    for (const entry of recognised) {
+      const category = categories.find((candidate) => candidate.id === entry.categoryId);
+      const label = category
+        ? language === 'ar'
+          ? category.nameAr
+          : category.nameEn
+        : entry.categoryId;
+      totals.set(label, (totals.get(label) ?? 0) + entry.amountH);
     }
 
     return Array.from(totals.entries())
       .map(([name, amountH]) => ({ name, value: amountH / 100 }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 6);
-  }, [entries]);
+  }, [recognised, categories, language]);
+
+  /* How this month's sales were tendered, as the server totals it from the
+     sales themselves (cash net of change). */
+  const paymentMix = useMemo(() => {
+    const thisMonth = new Date().toISOString().slice(0, 7);
+    const mix = summaries.find((summary) => summary.month === thisMonth)?.paymentMix;
+    if (!mix) return [];
+
+    return [
+      { key: 'cash' as const, name: t('pos.payment.cash'), value: mix.cashH / 100 },
+      { key: 'card' as const, name: t('pos.payment.card'), value: mix.cardH / 100 },
+      { key: 'credit' as const, name: t('pos.payment.credit'), value: mix.creditH / 100 },
+      { key: 'bank' as const, name: t('vendors.payment.bank'), value: mix.bankH / 100 },
+    ].filter((slice) => slice.value > 0);
+  }, [summaries, t]);
 
   if (loading) {
     return (
@@ -418,43 +421,43 @@ export default function FinanceOverviewPage() {
 
       {/* Payment mix */}
       {paymentMix.length > 0 && (
-        <div className="grid gap-3 lg:grid-cols-3">
-          <ChartCard title={t('dashboard.charts.byMethod')} height={240}>
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={paymentMix}
-                  dataKey="value"
-                  nameKey="name"
-                  innerRadius="55%"
-                  outerRadius="80%"
-                  paddingAngle={2}
-                  stroke="none"
-                >
-                  {paymentMix.map((slice) => (
-                    <Cell key={slice.key} fill={METHOD_COLOURS[slice.key]} />
-                  ))}
-                </Pie>
-                <RechartsTooltip
-                  formatter={(value: number) =>
-                    formatCurrency(value, { language, fromMinorUnits: false })
-                  }
-                  contentStyle={{ borderRadius: 8, border: '1px solid #E3E6EA', fontSize: 12 }}
-                />
-                <Legend
-                  verticalAlign="bottom"
-                  iconType="circle"
-                  iconSize={8}
-                  formatter={(value: string) => (
-                    <span style={{ fontSize: 11, color: '#4B5561' }}>{value}</span>
-                  )}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-          </ChartCard>
+        <ChartCard title={t('dashboard.charts.byMethod')} height={240}>
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={paymentMix}
+                dataKey="value"
+                nameKey="name"
+                innerRadius="55%"
+                outerRadius="80%"
+                paddingAngle={2}
+                stroke="none"
+              >
+                {paymentMix.map((slice) => (
+                  <Cell key={slice.key} fill={METHOD_COLOURS[slice.key]} />
+                ))}
+              </Pie>
+              <RechartsTooltip
+                formatter={(value: number) =>
+                  formatCurrency(value, { language, fromMinorUnits: false })
+                }
+                contentStyle={{ borderRadius: 8, border: '1px solid #E3E6EA', fontSize: 12 }}
+              />
+              <Legend
+                verticalAlign="bottom"
+                iconType="circle"
+                iconSize={8}
+                formatter={(value: string) => (
+                  <span style={{ fontSize: 11, color: '#4B5561' }}>{value}</span>
+                )}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      )}
 
-          {/* Upcoming commitments */}
-      <section className="rounded-lg border border-ink-200 bg-surface lg:col-span-2">
+      {/* Upcoming commitments */}
+      <section className="rounded-lg border border-ink-200 bg-surface">
         <header className="flex items-center justify-between border-b border-ink-200 px-4 py-2.5">
           <h2 className="flex items-center gap-1.5 text-sm font-semibold text-ink-900">
             <CalendarClock aria-hidden className="h-4 w-4 text-ink-400" />
@@ -512,8 +515,6 @@ export default function FinanceOverviewPage() {
           </ul>
         )}
       </section>
-        </div>
-      )}
     </div>
   );
 }

@@ -61,7 +61,7 @@ export default function UsersPage() {
       safeCall(() => userService.list()),
       safeCall(() => roleService.list()),
       safeCall(() => commissionService.rules()),
-      safeCall(() => branchService.list()),
+      safeCall(() => branchService.listAll()),
     ]);
     if (userResult.ok) setUsers(userResult.data);
     if (roleResult.ok) setRoles(roleResult.data);

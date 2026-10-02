@@ -1,8 +1,8 @@
 /**
- * Input validation shared by both auth implementations.
+ * Input validation for the sign-in forms.
  *
- * Pure functions with no knowledge of where the request goes, so the mock and
- * the API validate identically and a value accepted offline is accepted online.
+ * Pure functions with no knowledge of where the request goes, so a form can
+ * check a value before it is sent; the API validates again.
  */
 
 export function isValidEmail(value: string): boolean {

@@ -11,7 +11,7 @@ import type {
 /**
  * Authentication against the real API.
  *
- * Deliberately the same shape as mockAuthService: same method names, same
+ * Implements the sign-in contract: same method names, same
  * arguments, same return types. That is what lets a single config flag swap
  * between them without a line changing anywhere above.
  */
@@ -77,7 +77,7 @@ function mask(identifier: string, kind: IdentifierKind): string {
   return `+${digits.slice(0, 3)} •• ••• •${digits.slice(-2)}`;
 }
 
-/** Where a role lands after sign-in. Kept in step with the mock service. */
+/** Where a role lands after sign-in. */
 function landingFor(roleId: string): string {
   switch (roleId) {
     case 'rol_cashier':
@@ -100,6 +100,8 @@ function toSession(user: SessionResponse['user']): AuthSession {
     roleId: user.roleId,
     landingPath: landingFor(user.roleId),
     issuedAt: new Date().toISOString(),
+    permissions: user.permissions,
+    branchIds: user.branchIds,
   };
 }
 

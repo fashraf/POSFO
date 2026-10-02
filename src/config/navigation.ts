@@ -2,7 +2,6 @@ import {
   Boxes,
   ChefHat,
   Building2,
-  Component,
   Contact,
   FileText,
   LayoutGrid,
@@ -110,12 +109,6 @@ export const NAVIGATION: NavSection[] = [
       { id: 'devices', to: ROUTES.devices, labelKey: 'nav.devices', icon: Smartphone, module: 'devices' },
       { id: 'audit', to: ROUTES.audit, labelKey: 'nav.audit', icon: ScrollText, module: 'audit' },
       { id: 'apiPerformance', to: ROUTES.apiPerformance, labelKey: 'nav.apiPerformance', icon: Gauge, module: 'audit' },
-    ],
-  },
-  {
-    id: 'developer',
-    items: [
-      { id: 'components', to: ROUTES.components, labelKey: 'nav.components', icon: Component, module: 'settings' },
     ],
   },
 ];

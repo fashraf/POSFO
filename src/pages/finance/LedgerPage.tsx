@@ -120,6 +120,16 @@ export default function LedgerPage() {
 
   const balanced = totals.debitH === totals.creditH;
 
+  /* The list carries headers only; the drawer reads the entry with its
+     lines, so every debit and credit behind the total is shown. */
+  async function openEntry(entry: JournalEntry) {
+    setSelected(entry);
+    detail.open();
+    const result = await safeCall(() => ledgerService.get(entry.id));
+    if (result.ok) setSelected(result.data);
+    else toast.error(t('expenses.toast.failed'), result.error.message);
+  }
+
   async function reverse() {
     if (!selected) return;
     setBusy(true);
@@ -255,10 +265,7 @@ export default function LedgerPage() {
                     <TableRow
                       key={entry.id}
                       interactive
-                      onClick={() => {
-                        setSelected(entry);
-                        detail.open();
-                      }}
+                      onClick={() => void openEntry(entry)}
                     >
                       <TableCell>
                         <span className="flex flex-wrap items-center gap-1.5">

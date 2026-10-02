@@ -1,13 +1,11 @@
-import { Link } from 'react-router-dom';
 import {
-  ArrowRight,
   Blocks,
   Component,
   Languages,
   LayoutGrid,
   PlugZap,
 } from 'lucide-react';
-import { Button, Card, CardBody, PageHeader } from '@/components/ui';
+import { Card, CardBody, PageHeader } from '@/components/ui';
 import { useTranslation } from '@/i18n';
 import { APP_VERSION } from '@/lib/version';
 
@@ -29,13 +27,6 @@ export default function OverviewPage() {
         eyebrow={`${t('overview.eyebrow')} · v${APP_VERSION}`}
         title={t('overview.title')}
         description={t('overview.description')}
-        actions={
-          <Link to="/components">
-            <Button variant="outline" trailingIcon={<ArrowRight className="flip-rtl" />}>
-              {t('overview.viewComponents')}
-            </Button>
-          </Link>
-        }
       />
 
       <section aria-labelledby="capabilities-heading" className="space-y-4">

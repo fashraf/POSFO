@@ -33,7 +33,6 @@ export const ROUTES = {
   expenses: '/finance/expenses',
   ledger: '/finance/ledger',
   reports: '/reports',
-  components: '/components',
 } as const;
 
 export type RoutePath = (typeof ROUTES)[keyof typeof ROUTES];

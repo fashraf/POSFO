@@ -16,6 +16,7 @@ import { CatalogTable } from '@/features/catalog/CatalogTable';
 import { CategoriesPanel } from '@/features/catalog/CategoriesPanel';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { useDisclosure } from '@/hooks/useDisclosure';
+import { useSession } from '@/contexts/SessionContext';
 import { useToast } from '@/contexts/ToastContext';
 import { useI18n, useTranslation } from '@/i18n';
 import { formatNumber } from '@/lib/format';
@@ -49,6 +50,13 @@ export default function CatalogPage() {
   const { t } = useTranslation();
   const { language } = useI18n();
   const toast = useToast();
+
+  /* Offer only what the server will accept. Showing an action it then refuses
+     with 403 reads as a broken screen rather than a missing permission. */
+  const { can } = useSession();
+  const canCreate = can('products.create');
+  const canEdit = can('products.edit');
+  const canToggle = can('catalog.activate');
 
   /* ---- reference data, loaded once ---- */
   const [categories, setCategories] = useState<Category[]>([]);
@@ -93,7 +101,8 @@ export default function CatalogPage() {
   const loadReference = useCallback(async () => {
     const [categoryResult, vendorResult, staffResult, usageResult, printGroupResult] =
       await Promise.all([
-      safeCall(() => categoryService.list()),
+      /* Inactive too: the categories tab manages them and shows their status. */
+      safeCall(() => categoryService.list({ includeInactive: true })),
       safeCall(() => vendorService.list()),
       safeCall(() => staffService.list()),
       safeCall(() => categoryService.usage()),
@@ -261,14 +270,16 @@ export default function CatalogPage() {
         title={t('catalog.title')}
         description={t('catalog.description')}
         actions={
-          <>
-            <Button variant="outline" leadingIcon={<Wrench />} onClick={() => openCreate('service')}>
-              {t('catalog.addService')}
-            </Button>
-            <Button leadingIcon={<Plus />} onClick={() => openCreate('product')}>
-              {t('catalog.addProduct')}
-            </Button>
-          </>
+          canCreate ? (
+            <>
+              <Button variant="outline" leadingIcon={<Wrench />} onClick={() => openCreate('service')}>
+                {t('catalog.addService')}
+              </Button>
+              <Button leadingIcon={<Plus />} onClick={() => openCreate('product')}>
+                {t('catalog.addProduct')}
+              </Button>
+            </>
+          ) : undefined
         }
       />
 
@@ -371,9 +382,9 @@ export default function CatalogPage() {
             error={error}
             filtered={isFiltered}
             onRetry={() => void loadItems()}
-            onEdit={openEdit}
-            onToggleStatus={handleToggleRequest}
-            onCreate={() => openCreate('product')}
+            onEdit={canEdit ? openEdit : undefined}
+            onToggleStatus={canToggle ? handleToggleRequest : undefined}
+            onCreate={canCreate ? () => openCreate('product') : undefined}
           />
 
           {total > PAGE_SIZE && (
@@ -395,7 +406,11 @@ export default function CatalogPage() {
         onClose={form.close}
         item={editing}
         defaultKind={defaultKind}
-        categories={categories}
+        /* A new assignment only to a live category; the item's own stays
+           selectable so editing does not silently drop it. */
+        categories={categories.filter(
+          (category) => category.status === 'active' || category.id === editing?.categoryId,
+        )}
         printGroups={printGroups}
         vendors={vendors}
         staff={staff}

@@ -26,7 +26,7 @@ import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { useI18n, useTranslation } from '@/i18n';
 import { cn } from '@/lib/cn';
 import { formatCurrency, formatDate, formatNumber } from '@/lib/format';
-import { safeCall, vendorService } from '@/services';
+import { purchaseService, safeCall, vendorService } from '@/services';
 import { ageBucket, ageInDays, agingTotals } from '@/types/finance';
 import type { AgeBucket, AgingRow } from '@/types/finance';
 import type { BadgeTone } from '@/components/ui';
@@ -62,13 +62,13 @@ export default function PayablesPage() {
 
     const built = await Promise.all(
       owed.map(async (vendor) => {
-        const ledger = await safeCall(() => vendorService.ledger(vendor.id));
-        const firstPurchase =
-          ledger.ok && ledger.data.length > 0
-            ? (ledger.data.find((entry) => entry.kind === 'purchase')?.date ?? null)
-            : null;
+        /* Age from the oldest delivery still not fully paid — payments settle
+           the oldest first, so that is the debt that has waited longest. */
+        const purchases = await safeCall(() => purchaseService.unsettled(vendor.id));
+        const unsettled = purchases.ok ? purchases.data : [];
+        const oldestUnpaid = unsettled.length > 0 ? unsettled[unsettled.length - 1].receivedAt : null;
 
-        const oldestIso = firstPurchase ?? vendor.updatedAt;
+        const oldestIso = oldestUnpaid ?? vendor.lastPurchaseAt ?? vendor.updatedAt;
 
         return {
           id: vendor.id,

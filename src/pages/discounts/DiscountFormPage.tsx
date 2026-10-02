@@ -105,7 +105,7 @@ export default function DiscountFormPage({ mode }: { mode: 'create' | 'edit' }) 
 
     const [roleResult, branchResult] = await Promise.all([
       safeCall(() => roleService.list()),
-      safeCall(() => branchService.list()),
+      safeCall(() => branchService.listAll()),
     ]);
 
     if (roleResult.ok) setRoles(roleResult.data);

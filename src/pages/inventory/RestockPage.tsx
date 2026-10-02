@@ -19,6 +19,7 @@ import {
 } from '@/components/ui';
 import { useToast } from '@/contexts/ToastContext';
 import { useI18n, useTranslation } from '@/i18n';
+import { useSession } from '@/contexts/SessionContext';
 import { cn } from '@/lib/cn';
 import { formatNumber, toMinorUnits } from '@/lib/format';
 import { ROUTES } from '@/routes/paths';
@@ -55,6 +56,10 @@ function emptyLine(): DraftLine {
 export default function RestockPage() {
   const { t } = useTranslation();
   const { language } = useI18n();
+  const { user } = useSession();
+  /* The signed-in user, recorded against what they do here. */
+  const actorName =
+    (language === 'ar' ? user?.nameAr : user?.nameEn) || user?.nameEn || user?.username || '';
   const toast = useToast();
   const navigate = useNavigate();
   const [params] = useSearchParams();
@@ -212,7 +217,7 @@ export default function RestockPage() {
         lines: purchaseLines,
         paidOnReceipt: false,
         note: notes,
-        receivedBy: 'Ahmed Ali',
+        receivedBy: actorName,
       }),
     );
 

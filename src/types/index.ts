@@ -57,7 +57,6 @@ export {
 
 export {
   REDUCING_REASONS,
-  buildVendorLedger,
   computePurchaseTotals,
   weightedAverageCostH,
   type AdjustmentReason,

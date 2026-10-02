@@ -16,8 +16,7 @@ import { useI18n, useTranslation } from '@/i18n';
 import { cn } from '@/lib/cn';
 import { formatPercent } from '@/lib/format';
 import { ledgerService, safeCall } from '@/services';
-import { ACCOUNTS, accountBalanceH, monthKey } from '@/types/finance';
-import type { JournalEntry } from '@/types/finance';
+import type { FinanceSummary } from '@/services/api';
 
 function recentMonths(count = 12): string[] {
   const months: string[] = [];
@@ -99,16 +98,19 @@ export default function ProfitLossPage() {
   const { language } = useI18n();
   const { activeBranch } = useSession();
 
-  const [entries, setEntries] = useState<JournalEntry[]>([]);
+  const [summary, setSummary] = useState<FinanceSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [month, setMonth] = useState<string | null>(new Date().toISOString().slice(0, 7));
 
   const load = useCallback(async () => {
+    if (!month) return;
     setLoading(true);
-    const result = await safeCall(() => ledgerService.all(activeBranch?.id ?? null));
-    if (result.ok) setEntries(result.data);
+    const result = await safeCall(() =>
+      ledgerService.monthSummary(month, activeBranch?.id ?? null),
+    );
+    setSummary(result.ok ? result.data : null);
     setLoading(false);
-  }, [activeBranch]);
+  }, [activeBranch, month]);
 
   useEffect(() => {
     void load();
@@ -122,38 +124,34 @@ export default function ProfitLossPage() {
    * expenses.
    */
   const statement = useMemo(() => {
-    const inMonth = entries.filter((entry) => monthKey(entry.postedAt) === month);
-
-    const salesH = accountBalanceH(inMonth, '4100');
-    const returnsH = accountBalanceH(inMonth, '4200');
-    const netRevenueH = salesH - returnsH;
-    const cogsH = accountBalanceH(inMonth, '5100');
+    /* The server reports revenue net of returns and the returns on their
+       own, so gross sales is the two added back together. */
+    const returnsH = summary?.returnsH ?? 0;
+    const netRevenueH = summary?.revenueH ?? 0;
+    const salesH = netRevenueH + returnsH;
+    const cogsH = summary?.cogsH ?? 0;
     const grossProfitH = netRevenueH - cogsH;
 
-    const operating = [
-      { code: '6000', amountH: accountBalanceH(inMonth, '6000') },
-      { code: '6100', amountH: accountBalanceH(inMonth, '6100') },
-      { code: '6200', amountH: accountBalanceH(inMonth, '6200') },
-      { code: '6300', amountH: accountBalanceH(inMonth, '6300') },
-      { code: '5200', amountH: accountBalanceH(inMonth, '5200') },
-    ].filter((line) => line.amountH !== 0);
-
-    const operatingH = operating.reduce((sum, line) => sum + line.amountH, 0);
+    const operatingH = summary?.expensesH ?? 0;
+    /* Each expense account with movement this month. */
+    const operatingLines = (summary?.expensesByAccount ?? []).filter(
+      (account) => account.amountH !== 0,
+    );
 
     return {
       salesH,
       returnsH,
       netRevenueH,
+      operatingLines,
       cogsH,
       grossProfitH,
-      operating,
       operatingH,
       netProfitH: grossProfitH - operatingH,
       grossMargin: netRevenueH > 0 ? grossProfitH / netRevenueH : null,
       netMargin: netRevenueH > 0 ? (grossProfitH - operatingH) / netRevenueH : null,
-      hasActivity: inMonth.length > 0,
+      hasActivity: salesH !== 0 || cogsH !== 0 || operatingH !== 0,
     };
-  }, [entries, month]);
+  }, [summary]);
 
   if (loading) return <LoadingState className="py-20" />;
 
@@ -171,16 +169,16 @@ export default function ProfitLossPage() {
               onChange={setMonth}
               options={recentMonths().map((value) => ({ value, label: value }))}
             />
-
-      <FinanceTabs />
-
-      <ScopeBanner />
             <Button variant="outline" leadingIcon={<Printer />} onClick={() => window.print()}>
               {t('pnl.export')}
             </Button>
           </>
         }
       />
+
+      <FinanceTabs />
+
+      <ScopeBanner />
 
       {!statement.hasActivity ? (
         <div className="rounded-lg border border-dashed border-ink-300 bg-surface">
@@ -200,12 +198,8 @@ export default function ProfitLossPage() {
             <dl className="py-1">
               <StatementSection label={t('pnl.revenue')} />
               <StatementRow label={t('pnl.sales')} amountH={statement.salesH} />
-              {statement.returnsH > 0 && (
-                <StatementRow
-                  label={t('pnl.returns')}
-                  amountH={-statement.returnsH}
-                  negative
-                />
+              {statement.returnsH !== 0 && (
+                <StatementRow label={t('pnl.returns')} amountH={-statement.returnsH} negative />
               )}
               <StatementRow
                 label={t('pnl.netRevenue')}
@@ -227,22 +221,18 @@ export default function ProfitLossPage() {
               />
 
               <StatementSection label={t('pnl.operating')} />
-              {statement.operating.length === 0 ? (
-                <p className="px-5 ps-9 py-1.5 text-sm text-ink-400">—</p>
-              ) : (
-                statement.operating.map((line) => (
-                  <StatementRow
-                    key={line.code}
-                    label={
-                      language === 'ar'
-                        ? (ACCOUNTS[line.code]?.nameAr ?? line.code)
-                        : (ACCOUNTS[line.code]?.nameEn ?? line.code)
-                    }
-                    amountH={-line.amountH}
-                    negative
-                  />
-                ))
-              )}
+              {statement.operatingLines.map((account) => (
+                <StatementRow
+                  key={account.accountCode}
+                  label={
+                    (language === 'ar' ? account.nameAr : account.nameEn) ||
+                    account.name ||
+                    account.accountCode
+                  }
+                  amountH={-account.amountH}
+                  negative
+                />
+              ))}
               <StatementRow
                 label={t('pnl.operating')}
                 amountH={-statement.operatingH}

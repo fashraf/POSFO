@@ -5,11 +5,9 @@ import type {
   DiscountableLine,
 } from '@/types/discounts';
 import { evaluateDiscount } from '@/types/discounts';
-import { HttpError } from './http';
-import { SEED_DISCOUNTS } from './mock/seed';
-import { compareBy, delay, nextId, notFound, timestamp, validationFailed } from './mock/store';
-
-let discounts: Discount[] = [...SEED_DISCOUNTS];
+import { activationApi, discountAdminApi, discountApi, type ApiDiscount } from './api';
+import { invalidate } from './dataVersion';
+import { day, utc } from './mappers/time';
 
 /** A discount plus why it is or is not offered on the current basket. */
 export interface ResolvedDiscount {
@@ -17,119 +15,77 @@ export interface ResolvedDiscount {
   eligibility: DiscountEligibility;
 }
 
-function validate(input: DiscountInput, currentId?: string): void {
-  const errors: Record<string, string[]> = {};
+function toDiscount(row: ApiDiscount): Discount {
+  return {
+    id: row.id,
+    nameAr: row.nameAr,
+    nameEn: row.nameEn,
+    description: row.description,
+    type: row.type,
+    value: row.value,
+    maxAmountH: row.maxAmountH,
+    minOrderH: row.minOrderH,
+    applicability: row.applicability,
+    appliesToIds: row.appliesToIds,
+    branchIds: row.branchIds,
+    allowedRoleIds: row.allowedRoleIds,
+    requiresApprovalAboveH: row.requiresApprovalAboveH,
+    isAutomatic: row.isAutomatic,
+    allowStacking: row.allowStacking,
+    activeDays: row.activeDays,
+    startsAt: row.startsAt ?? null,
+    endsAt: row.endsAt ?? null,
+    status: row.status,
+    usageCount: row.usageCount,
+    createdAt: utc(row.createdAt),
+    updatedAt: utc(row.updatedAt),
+  };
+}
 
-  if (!input.nameAr.trim()) errors.nameAr = ['Arabic name is required.'];
-  if (!input.nameEn.trim()) errors.nameEn = ['English name is required.'];
-
-  if (
-    discounts.some(
-      (discount) =>
-        discount.id !== currentId &&
-        discount.nameEn.trim().toLowerCase() === input.nameEn.trim().toLowerCase(),
-    )
-  ) {
-    errors.nameEn = ['Another discount already uses this name.'];
-  }
-
-  if (input.value <= 0) {
-    errors.value = ['Enter a value above zero, or the discount does nothing.'];
-  }
-
-  /* A percentage over 100 would hand money back rather than discount a sale. */
-  if (input.type === 'percentage' && input.value > 100 * 100) {
-    errors.value = ['A percentage discount cannot exceed 100%.'];
-  }
-
-  if (input.maxAmountH < 0) errors.maxAmountH = ['A maximum cannot be negative.'];
-  if (input.minOrderH < 0) errors.minOrderH = ['A minimum cannot be negative.'];
-
-  if (input.type === 'fixed' && input.maxAmountH > 0 && input.maxAmountH < input.value) {
-    errors.maxAmountH = [
-      'The maximum is below the discount itself, so it would always be clipped. Raise it or remove it.',
-    ];
-  }
-
-  if (input.applicability === 'selected' && input.appliesToIds.length === 0) {
-    errors.appliesToIds = ['Choose at least one item or category, or switch to "All".'];
-  }
-
-  if (input.startsAt && input.endsAt) {
-    if (new Date(input.endsAt).getTime() <= new Date(input.startsAt).getTime()) {
-      errors.endsAt = ['The end date must be after the start date.'];
-    }
-  }
-
-  if (Object.keys(errors).length > 0) throw validationFailed(errors);
+function toPayload(input: DiscountInput) {
+  return {
+    nameAr: input.nameAr.trim(),
+    nameEn: input.nameEn.trim(),
+    description: input.description.trim() || null,
+    type: input.type,
+    value: input.value,
+    maxAmountH: input.maxAmountH,
+    minOrderH: input.minOrderH,
+    applicability: input.applicability,
+    appliesToIds: input.appliesToIds,
+    branchIds: input.branchIds,
+    allowedRoleIds: input.allowedRoleIds,
+    requiresApprovalAboveH: input.requiresApprovalAboveH,
+    isAutomatic: input.isAutomatic,
+    allowStacking: input.allowStacking,
+    activeDays: input.activeDays,
+    /* Calendar days. */
+    startsAt: day(input.startsAt),
+    endsAt: day(input.endsAt),
+    status: input.status,
+  };
 }
 
 export const discountService = {
   async list(): Promise<Discount[]> {
-    await delay(180);
-    return compareBy(discounts, 'nameEn', 'asc');
+    const rows = await discountApi.list();
+    return rows.map(toDiscount);
   },
 
   async get(id: string): Promise<Discount> {
-    await delay(140);
-    const discount = discounts.find((candidate) => candidate.id === id);
-    if (!discount) throw notFound('Discount', id);
-    return discount;
+    return toDiscount(await discountAdminApi.get(id));
   },
 
   async create(input: DiscountInput): Promise<Discount> {
-    await delay(360);
-    validate(input);
-
-    const now = timestamp();
-    const created: Discount = {
-      id: nextId('dsc'),
-      nameAr: input.nameAr.trim(),
-      nameEn: input.nameEn.trim(),
-      description: input.description.trim(),
-      type: input.type,
-      value: input.value,
-      maxAmountH: input.maxAmountH,
-      minOrderH: input.minOrderH,
-      applicability: input.applicability,
-      appliesToIds: input.appliesToIds,
-      branchIds: input.branchIds,
-      allowedRoleIds: input.allowedRoleIds,
-      requiresApprovalAboveH: input.requiresApprovalAboveH,
-      isAutomatic: input.isAutomatic,
-      allowStacking: input.allowStacking,
-      activeDays: input.activeDays,
-      startsAt: input.startsAt,
-      endsAt: input.endsAt,
-      status: input.status,
-      usageCount: 0,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    discounts = [created, ...discounts];
-    return created;
+    const created = await discountAdminApi.create(toPayload(input));
+    invalidate('discounts');
+    return toDiscount(created);
   },
 
   async update(id: string, input: DiscountInput): Promise<Discount> {
-    await delay(360);
-
-    const existing = discounts.find((candidate) => candidate.id === id);
-    if (!existing) throw notFound('Discount', id);
-
-    validate(input, id);
-
-    const updated: Discount = {
-      ...existing,
-      ...input,
-      nameAr: input.nameAr.trim(),
-      nameEn: input.nameEn.trim(),
-      description: input.description.trim(),
-      updatedAt: timestamp(),
-    };
-
-    discounts = discounts.map((discount) => (discount.id === id ? updated : discount));
-    return updated;
+    const updated = await discountAdminApi.update(id, toPayload(input));
+    invalidate('discounts');
+    return toDiscount(updated);
   },
 
   /**
@@ -137,39 +93,26 @@ export const discountService = {
    * was applied to, so removing the row would orphan that history.
    */
   async setStatus(id: string, status: 'active' | 'inactive'): Promise<Discount> {
-    await delay(280);
-
-    const existing = discounts.find((candidate) => candidate.id === id);
-    if (!existing) throw notFound('Discount', id);
-
-    const updated: Discount = { ...existing, status, updatedAt: timestamp() };
-    discounts = discounts.map((discount) => (discount.id === id ? updated : discount));
-    return updated;
+    await activationApi.set('discount', id, status === 'active');
+    invalidate('discounts');
+    return discountService.get(id);
   },
 
+  /** Only a discount never used; a used one is refused with 409 discount_in_use. */
   async remove(id: string): Promise<void> {
-    await delay(280);
-
-    const existing = discounts.find((candidate) => candidate.id === id);
-    if (!existing) throw notFound('Discount', id);
-
-    if (existing.usageCount > 0) {
-      throw new HttpError({
-        status: 409,
-        code: 'discount_in_use',
-        message:
-          'This discount has been used on real sales. Deactivate it instead so the history stays intact.',
-      });
-    }
-
-    discounts = discounts.filter((discount) => discount.id !== id);
+    await discountAdminApi.remove(id);
+    invalidate('discounts');
   },
 
   /**
-   * Every discount, each with whether it applies to this basket and what it
-   * would take off. The POS shows ineligible ones greyed with the reason rather
-   * than hiding them — a cashier needs to know a discount exists but needs
-   * another 50 riyals on the basket.
+   * What the till may offer on this basket, each with whether it applies and
+   * what it would take off.
+   *
+   * The server decides what is live here and now — status, dates, weekday,
+   * the basket's minimum, the branch and the cashier's role — and lists only
+   * those. What needs the basket's lines (which items or categories a
+   * discount covers, and so its amount and cap) is worked out here, and a
+   * discount covering nothing in the basket is shown greyed with the reason.
    */
   async resolveForCart(context: {
     lines: DiscountableLine[];
@@ -177,11 +120,31 @@ export const discountService = {
     roleId: string | null;
     branchId: string | null;
   }): Promise<ResolvedDiscount[]> {
-    await delay(160);
+    const rows = await discountApi.applicable(
+      Math.max(0, Math.round(context.basketTotalH)),
+      context.branchId,
+    );
 
-    return discounts
-      .filter((discount) => discount.status === 'active')
-      .map((discount) => ({ discount, eligibility: evaluateDiscount(discount, context) }))
+    return rows
+      .map(toDiscount)
+      .map((discount) => ({
+        discount,
+        /* Only the line rules: the scopes the server already applied are
+           cleared, so a browser clock or time zone cannot disagree with it
+           (a discount ending today would otherwise read as expired). */
+        eligibility: evaluateDiscount(
+          {
+            ...discount,
+            startsAt: null,
+            endsAt: null,
+            activeDays: [],
+            branchIds: [],
+            allowedRoleIds: [],
+            minOrderH: 0,
+          },
+          context,
+        ),
+      }))
       .sort((a, b) => {
         if (a.eligibility.eligible !== b.eligibility.eligible) {
           return a.eligibility.eligible ? -1 : 1;
@@ -189,17 +152,4 @@ export const discountService = {
         return b.eligibility.amountH - a.eligibility.amountH;
       });
   },
-
-  /** Bump the usage counter once a sale actually completes. */
-  async recordUsage(id: string): Promise<void> {
-    const existing = discounts.find((candidate) => candidate.id === id);
-    if (!existing) return;
-
-    discounts = discounts.map((discount) =>
-      discount.id === id
-        ? { ...discount, usageCount: discount.usageCount + 1, updatedAt: timestamp() }
-        : discount,
-    );
-  },
 };
-

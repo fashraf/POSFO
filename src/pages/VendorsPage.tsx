@@ -196,7 +196,6 @@ export default function VendorsPage() {
         amountH: toMinorUnits(amount || '0'),
         method,
         note: payNote,
-        paidBy: 'Ahmed Ali',
       }),
     );
 

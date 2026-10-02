@@ -28,6 +28,7 @@ import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { useDisclosure } from '@/hooks/useDisclosure';
 import { useToast } from '@/contexts/ToastContext';
 import { useI18n, useTranslation } from '@/i18n';
+import { useSession } from '@/contexts/SessionContext';
 import { cn } from '@/lib/cn';
 import { formatNumber, fromMinorUnits } from '@/lib/format';
 import { customerService, safeCall, type CustomerInput } from '@/services';
@@ -40,6 +41,10 @@ type FilterValue = 'all' | 'owing' | 'settled' | 'overLimit';
 export default function CustomersPage() {
   const { t } = useTranslation();
   const { language } = useI18n();
+  const { user } = useSession();
+  /* The signed-in user, recorded against what they do here. */
+  const actorName =
+    (language === 'ar' ? user?.nameAr : user?.nameEn) || user?.nameEn || user?.username || '';
   const toast = useToast();
 
   const wizard = useDisclosure();
@@ -155,7 +160,7 @@ export default function CustomersPage() {
       customerService.recordPayment({
         ...input,
         customerId: selected.id,
-        receivedBy: 'Ahmed Ali',
+        receivedBy: actorName,
       }),
     );
 

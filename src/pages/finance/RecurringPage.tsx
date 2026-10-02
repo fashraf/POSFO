@@ -161,6 +161,7 @@ export default function RecurringPage() {
       recurringService.setStatus(payment.id, payment.status === 'active' ? 'paused' : 'active'),
     );
     if (result.ok) await load();
+    else toast.error(t('recurring.toast.failed'), result.error.message);
   }
 
   const categoryName = (id: string) => {

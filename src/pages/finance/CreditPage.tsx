@@ -15,10 +15,10 @@ import { ScopeBanner } from '@/features/finance/ScopeBanner';
 import { useI18n, useTranslation } from '@/i18n';
 import { cn } from '@/lib/cn';
 import { formatCurrency, formatNumber } from '@/lib/format';
-import { customerService, safeCall, vendorService } from '@/services';
+import { customerService, purchaseService, safeCall, vendorService } from '@/services';
 import { ageBucket, ageInDays } from '@/types/finance';
 import type { Customer } from '@/types/sales';
-import type { Vendor } from '@/types/catalog';
+import type { VendorWithBalance } from '@/services/inventoryService';
 
 interface Position {
   receivableH: number;
@@ -43,7 +43,7 @@ export default function CreditPage() {
 
   const [position, setPosition] = useState<Position | null>(null);
   const [topCustomers, setTopCustomers] = useState<Customer[]>([]);
-  const [topVendors, setTopVendors] = useState<(Vendor & { balanceH: number })[]>([]);
+  const [topVendors, setTopVendors] = useState<VendorWithBalance[]>([]);
   const [loading, setLoading] = useState(true);
 
   const nameOf = <T extends { nameAr: string; nameEn: string }>(record: T) =>
@@ -52,9 +52,10 @@ export default function CreditPage() {
   const load = useCallback(async () => {
     setLoading(true);
 
-    const [customerResult, vendorResult] = await Promise.all([
+    const [customerResult, vendorResult, unsettledResult] = await Promise.all([
       safeCall(() => customerService.list()),
       safeCall(() => vendorService.list()),
+      safeCall(() => purchaseService.unsettled()),
     ]);
 
     const customers = customerResult.ok
@@ -79,7 +80,13 @@ export default function CreditPage() {
       vendors: vendors.length,
       overLimit: customers.filter((customer) => customer.balanceH > customer.creditLimitH).length,
       staleReceivableH: stale(customers),
-      stalePayableH: stale(vendors),
+      /* Per delivery: what is still owed on purchases received 60+ days ago. */
+      stalePayableH: (unsettledResult.ok ? unsettledResult.data : [])
+        .filter((purchase) => {
+          const bucket = ageBucket(purchase.receivedAt);
+          return bucket === 'd60' || bucket === 'd90';
+        })
+        .reduce((sum, purchase) => sum + purchase.outstandingH, 0),
     });
 
     setTopCustomers([...customers].sort((a, b) => b.balanceH - a.balanceH).slice(0, 5));
@@ -292,7 +299,7 @@ export default function CreditPage() {
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium text-ink-900">{nameOf(vendor)}</p>
                     <p className="text-2xs text-ink-400">
-                      {t('aging.days', { days: ageInDays(vendor.updatedAt) })}
+                      {t('aging.days', { days: ageInDays(vendor.lastPurchaseAt ?? vendor.updatedAt) })}
                     </p>
                   </div>
 

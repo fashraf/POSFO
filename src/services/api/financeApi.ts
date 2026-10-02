@@ -138,6 +138,70 @@ export const periodApi = {
   },
 };
 
+export interface ApiOpeningBalance {
+  openingId: string;
+  branchId?: string;
+  asOf: string;
+  cashH: number;
+  bankH: number;
+  inventoryH: number;
+  receivablesH: number;
+  payablesH: number;
+  vatH: number;
+  assetsH: number;
+  liabilitiesH: number;
+  equityH: number;
+  entryId: string;
+  reference: string;
+  status: 'posted' | 'reversed';
+  reversedByEntryId?: string;
+  note: string;
+  postedAt: string;
+  actor: string;
+}
+
+export interface ApiOpeningBalances {
+  posted: boolean;
+  branchId?: string;
+  current?: ApiOpeningBalance;
+  openingId?: string;
+  asOf?: string;
+  cashH?: number;
+  bankH?: number;
+  inventoryH?: number;
+  receivablesH?: number;
+  payablesH?: number;
+  vatH?: number;
+  equityH?: number;
+  entryId?: string;
+  postedAt?: string;
+  actor?: string;
+  history: ApiOpeningBalance[];
+}
+
+export const openingBalanceApi = {
+  /** No branchId = the business-level position. */
+  get(branchId?: string | null) {
+    return api.get<ApiOpeningBalances>('/api/finance/opening-balances', {
+      query: { branchId: branchId ?? undefined },
+    });
+  },
+
+  /** 409 already_posted while a posting stands; 422 nothing_to_post. */
+  post(payload: {
+    branchId?: string | null;
+    asOf: string;
+    cashH: number;
+    bankH: number;
+    inventoryH: number;
+    receivablesH: number;
+    payablesH: number;
+    vatH: number;
+  }) {
+    return api.post<ApiOpeningBalances>('/api/finance/opening-balances', payload);
+  },
+};
+
 export const payrollApi = {
   runs(branchId?: string | null) {
     return api.get<Record<string, unknown>[]>('/api/finance/payroll', {
@@ -177,7 +241,130 @@ export const payrollApi = {
   },
 };
 
+export interface ApiExpenseCategory {
+  categoryId: string;
+  nameAr: string;
+  nameEn: string;
+  name?: string;
+  accountCode: string;
+  accountNameAr?: string;
+  accountNameEn?: string;
+  isActive: boolean;
+  status?: 'active' | 'inactive';
+  expenseCount?: number;
+  recurringCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ApiExpenseRecognitionItem {
+  month: string;
+  amountH: number;
+  expenseId: string;
+  reference: string;
+  categoryId: string;
+  categoryNameAr: string;
+  categoryNameEn: string;
+  accountCode: string;
+  branchId?: string;
+  descriptionEn: string;
+  descriptionAr: string;
+  recognition: string;
+  paymentMethod: string;
+  paidOn: string;
+  periodStart?: string;
+  periodEnd?: string;
+  expenseAmountH: number;
+  vatH: number;
+}
+
+export interface ApiExpenseRecognition {
+  from: string;
+  to: string;
+  branchId?: string;
+  totalH: number;
+  branchTotalH?: number;
+  businessWideTotalH: number;
+  byMonth: { month: string; amountH: number }[];
+  byCategory: {
+    categoryId: string;
+    nameAr: string;
+    nameEn: string;
+    name: string;
+    accountCode: string;
+    amountH: number;
+  }[];
+  byMonthCategory: { month: string; categoryId: string; amountH: number }[];
+  items: ApiExpenseRecognitionItem[];
+}
+
+export const expenseCategoryApi = {
+  /** Active categories unless includeInactive is set. */
+  list(query: { includeInactive?: boolean } = {}) {
+    return api.get<ApiExpenseCategory[]>('/api/expenses/categories', { query });
+  },
+
+  create(payload: { nameAr: string; nameEn: string; accountCode: string; status?: string }) {
+    return api.post<ApiExpenseCategory>('/api/expenses/categories', payload);
+  },
+
+  update(
+    categoryId: string,
+    payload: { nameAr: string; nameEn: string; accountCode: string; status?: string },
+  ) {
+    return api.put<ApiExpenseCategory>(`/api/expenses/categories/${categoryId}`, payload);
+  },
+
+  /** The month-by-month split of each posted expense, net of VAT. */
+  recognition(query: {
+    month?: string;
+    from?: string;
+    to?: string;
+    branchId?: string | null;
+    categoryId?: string | null;
+  }) {
+    return api.get<ApiExpenseRecognition>('/api/expenses/recognition', {
+      query: {
+        ...query,
+        branchId: query.branchId ?? undefined,
+        categoryId: query.categoryId ?? undefined,
+      },
+    });
+  },
+};
+
+export interface SaveRecurringPayload {
+  descriptionEn: string;
+  descriptionAr?: string | null;
+  categoryId: string;
+  branchId?: string | null;
+  amountH: number;
+  frequency: string;
+  nextDueOn: string;
+  paymentMethod?: string | null;
+  note?: string | null;
+  status?: 'active' | 'paused';
+}
+
 export const recurringApi = {
+  get(recurringId: string) {
+    return api.get<Record<string, unknown>>(`/api/expenses/recurring/${recurringId}`);
+  },
+
+  create(payload: SaveRecurringPayload) {
+    return api.post<Record<string, unknown>>('/api/expenses/recurring', payload);
+  },
+
+  update(recurringId: string, payload: SaveRecurringPayload) {
+    return api.put<Record<string, unknown>>(`/api/expenses/recurring/${recurringId}`, payload);
+  },
+
+  setStatus(recurringId: string, status: 'active' | 'paused') {
+    return api.patch<Record<string, unknown>>(`/api/expenses/recurring/${recurringId}/status`, {
+      status,
+    });
+  },
+
   recordInstalment(recurringId: string, paidOn: string) {
     return api.post<{ expenseId: string }>(`/api/finance/recurring/${recurringId}/record`, {
       paidOn,

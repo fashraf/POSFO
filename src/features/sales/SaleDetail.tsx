@@ -168,7 +168,7 @@ export function SaleDetail({
         description={formatDate(sale.soldAt, { language, withTime: true })}
         footer={
           <>
-            {canVoid && !isVoided && notes.length === 0 && (
+            {canVoid && sale.status === 'completed' && notes.length === 0 && (
               <Button variant="outline" leadingIcon={<Ban />} onClick={() => setVoiding(true)}>
                 {t('sales.actions.voidSale')}
               </Button>

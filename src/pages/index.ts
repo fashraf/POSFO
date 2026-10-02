@@ -1,5 +1,4 @@
 export { default as CatalogPage } from './CatalogPage';
-export { default as ComponentsPage } from './ComponentsPage';
 export { default as CustomersPage } from './CustomersPage';
 export { default as DashboardPage } from './DashboardPage';
 export { default as InventoryPage } from './InventoryPage';

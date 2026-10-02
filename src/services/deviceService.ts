@@ -1,4 +1,3 @@
-import { USE_MOCKS } from '@/config/env';
 import {
   deviceApi,
   type CommandType,
@@ -6,7 +5,6 @@ import {
   type DeviceEvent,
   type DeviceRow,
 } from './api/deviceApi';
-import { mockDeviceService } from './mock/deviceMock';
 
 /**
  * POS devices.
@@ -46,27 +44,27 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const deviceService = {
   list(query: { branchId?: string; status?: string; deviceType?: string; search?: string } = {}) {
-    return USE_MOCKS ? mockDeviceService.list(query) : deviceApi.list(query);
+    return deviceApi.list(query);
   },
 
   get(deviceId: string): Promise<DeviceRow> {
-    return USE_MOCKS ? mockDeviceService.get(deviceId) : deviceApi.get(deviceId);
+    return deviceApi.get(deviceId);
   },
 
   events(deviceId: string, take = 50): Promise<DeviceEvent[]> {
-    return USE_MOCKS ? mockDeviceService.events(deviceId, take) : deviceApi.events(deviceId, take);
+    return deviceApi.events(deviceId, take);
   },
 
   create(body: Parameters<typeof deviceApi.create>[0]) {
-    return USE_MOCKS ? mockDeviceService.create(body) : deviceApi.create(body);
+    return deviceApi.create(body);
   },
 
   update(deviceId: string, body: Record<string, unknown>) {
-    return USE_MOCKS ? mockDeviceService.update(deviceId, body) : deviceApi.update(deviceId, body);
+    return deviceApi.update(deviceId, body);
   },
 
   regenerateCode(deviceId: string) {
-    return USE_MOCKS ? mockDeviceService.regenerateCode(deviceId) : deviceApi.regenerateCode(deviceId);
+    return deviceApi.regenerateCode(deviceId);
   },
 
   /**
@@ -82,8 +80,6 @@ export const deviceService = {
     commandType: CommandType,
     onProgress?: (progress: CommandProgress) => void,
   ): Promise<DeviceCommandResult> {
-    if (USE_MOCKS) return mockDeviceService.runCommand(deviceId, commandType, onProgress);
-
     const startedAt = Date.now();
     const { commandId } = await deviceApi.queueCommand(deviceId, commandType);
 

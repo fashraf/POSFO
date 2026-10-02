@@ -23,14 +23,13 @@ import {
 } from '@/components/ui';
 import { FinanceTabs } from '@/features/finance/FinanceTabs';
 import { ScopeBanner } from '@/features/finance/ScopeBanner';
-import { useSession } from '@/contexts/SessionContext';
 import { useToast } from '@/contexts/ToastContext';
 import { useI18n, useTranslation } from '@/i18n';
 import { formatDate, fromMinorUnits, toMinorUnits } from '@/lib/format';
-import { commissionService, payrollService, safeCall, userService } from '@/services';
+import { commissionService, payrollService, safeCall } from '@/services';
+import { CommissionBreakdown } from '@/features/finance/CommissionBreakdown';
 import { netPayH } from '@/types/finance';
 import type { CommissionEntry, PayrollLine, PayrollRun } from '@/types/finance';
-import { CommissionBreakdown } from '@/features/finance/CommissionBreakdown';
 
 function recentMonths(count = 6): string[] {
   const months: string[] = [];
@@ -45,7 +44,6 @@ function recentMonths(count = 6): string[] {
 export default function PayrollPage() {
   const { t } = useTranslation();
   const { language } = useI18n();
-  const { user } = useSession();
   const toast = useToast();
   const [params] = useSearchParams();
 
@@ -56,15 +54,17 @@ export default function PayrollPage() {
   }, [params]);
 
   const [period, setPeriod] = useState<string | null>(new Date().toISOString().slice(0, 7));
+  const [runId, setRunId] = useState<string | null>(null);
   const [lines, setLines] = useState<PayrollLine[]>([]);
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [paidOn, setPaidOn] = useState(new Date().toISOString().slice(0, 10));
   const [confirming, setConfirming] = useState(false);
-  const [breakdownFor, setBreakdownFor] = useState<PayrollLine | null>(null);
-  const [breakdown, setBreakdown] = useState<CommissionEntry[]>([]);
   const [busy, setBusy] = useState(false);
-
-  const actor = user ? (language === 'ar' ? user.nameAr : user.nameEn) : 'System';
+  const [breakdown, setBreakdown] = useState<{
+    name: string;
+    period: string;
+    entries: CommissionEntry[];
+  } | null>(null);
 
   const load = useCallback(async () => {
     const result = await safeCall(() => payrollService.list());
@@ -75,38 +75,19 @@ export default function PayrollPage() {
     void load();
   }, [load]);
 
+  /* The server builds the lines: each active employee's base salary from their
+     record and commission as frozen at each sale. Both stay editable here
+     before paying, except commission. */
   async function buildDraft() {
     if (!period) return;
     setBusy(true);
 
-    const staffResult = await safeCall(() => userService.list());
-    if (!staffResult.ok) {
-      setBusy(false);
-      return;
+    const draft = await safeCall(() => payrollService.draft({ period }));
+    if (draft.ok) {
+      setRunId(draft.data.id);
+      setLines(draft.data.lines);
     }
-
-    /* A default base salary stands in for an HR field the system does not yet
-       hold; the figure is editable before paying. */
-    const staff = staffResult.data
-      .filter((member) => member.status === 'active')
-      .map((member) => ({
-        userId: member.id,
-        nameAr: member.nameAr,
-        nameEn: member.nameEn,
-        baseSalaryH: 400000,
-      }));
-
-    const draft = await safeCall(() => payrollService.draft({ period, staff }));
-    if (draft.ok) setLines(draft.data);
     setBusy(false);
-  }
-
-  /* Opening the breakdown is how a commission figure stops being something an
-     employee has to take on trust. */
-  async function openBreakdown(line: PayrollLine) {
-    setBreakdownFor(line);
-    const result = await safeCall(() => commissionService.list(line.userId, period ?? undefined));
-    setBreakdown(result.ok ? result.data : []);
   }
 
   function updateLine(userId: string, patch: Partial<PayrollLine>) {
@@ -120,18 +101,17 @@ export default function PayrollPage() {
   }
 
   async function pay() {
-    if (!period) return;
+    if (!runId) return;
     setBusy(true);
 
-    const result = await safeCall(() =>
-      payrollService.pay({ period, lines, paidOn, actor }),
-    );
+    const result = await safeCall(() => payrollService.pay({ runId, lines, paidOn }));
 
     setBusy(false);
     setConfirming(false);
 
     if (result.ok) {
       toast.success(t('payroll.toast.paid'));
+      setRunId(null);
       setLines([]);
       await load();
     } else {
@@ -142,9 +122,19 @@ export default function PayrollPage() {
   const nameOf = <T extends { nameAr: string; nameEn: string }>(record: T) =>
     language === 'ar' ? record.nameAr : record.nameEn;
 
+  /* The frozen sale lines behind one person's commission for the period. */
+  async function openBreakdown(line: PayrollLine) {
+    if (!period) return;
+    const result = await safeCall(() =>
+      commissionService.entries({ userId: line.userId, period }),
+    );
+    if (result.ok) setBreakdown({ name: nameOf(line), period, entries: result.data });
+    else toast.error(t('payroll.toast.failed'), result.error.message);
+  }
+
   const totals = lines.reduce(
     (sum, line) => ({
-      salaries: sum.salaries + line.baseSalaryH,
+      salaries: sum.salaries + line.baseSalaryH + line.allowancesH,
       commission: sum.commission + line.commissionH,
       net: sum.net + line.netPayH,
     }),
@@ -202,6 +192,7 @@ export default function PayrollPage() {
                   <TableHeaderCell>{t('payroll.columns.employee')}</TableHeaderCell>
                   <TableHeaderCell numeric>{t('payroll.columns.base')}</TableHeaderCell>
                   <TableHeaderCell numeric>{t('payroll.columns.commission')}</TableHeaderCell>
+                  <TableHeaderCell numeric>{t('payroll.columns.allowances')}</TableHeaderCell>
                   <TableHeaderCell numeric>{t('payroll.columns.deductions')}</TableHeaderCell>
                   <TableHeaderCell numeric>{t('payroll.columns.net')}</TableHeaderCell>
                 </TableRow>
@@ -225,20 +216,35 @@ export default function PayrollPage() {
                       />
                     </TableCell>
 
-                    {/* Not editable — it is a record of what was earned. Click
-                        through to see exactly which sales produced it. */}
+                    {/* Not editable — it is a record of what was earned. */}
                     <TableCell numeric>
-                      <button
-                        type="button"
-                        onClick={() => void openBreakdown(line)}
-                        className="rounded px-1.5 py-0.5 transition-colors hover:bg-ink-100"
-                        title={t('commissionDetail.view')}
-                      >
-                        <CurrencyDisplay
-                          amount={line.commissionH}
-                          className="font-medium text-success-600 underline decoration-dotted underline-offset-2"
-                        />
-                      </button>
+                      <CurrencyDisplay
+                        amount={line.commissionH}
+                        className="block font-medium text-success-600"
+                      />
+                      {line.commissionH > 0 && (
+                        <button
+                          type="button"
+                          className="text-2xs font-medium text-brand-600 hover:underline"
+                          onClick={() => void openBreakdown(line)}
+                        >
+                          {t('commissionDetail.view')}
+                        </button>
+                      )}
+                    </TableCell>
+
+                    <TableCell numeric>
+                      <PriceInput
+                        inputSize="sm"
+                        className="w-24"
+                        value={line.allowancesH === 0 ? '' : fromMinorUnits(line.allowancesH)}
+                        onChange={(event) =>
+                          updateLine(line.userId, {
+                            allowancesH: toMinorUnits(event.target.value || '0'),
+                          })
+                        }
+                        placeholder="0.00"
+                      />
                     </TableCell>
 
                     <TableCell numeric>
@@ -316,9 +322,13 @@ export default function PayrollPage() {
                     <CurrencyDisplay amount={run.totalH} className="font-medium text-ink-900" />
                   </TableCell>
                   <TableCell>
-                    <Badge tone="success" dot>
-                      {t('payroll.alreadyPaid')}
-                    </Badge>
+                    {run.status === 'paid' ? (
+                      <Badge tone="success" dot>
+                        {t('payroll.alreadyPaid')}
+                      </Badge>
+                    ) : (
+                      <Badge tone="neutral">{t('payrollPage.status.draft')}</Badge>
+                    )}
                   </TableCell>
                 </TableRow>
               ))
@@ -328,11 +338,11 @@ export default function PayrollPage() {
       </div>
 
       <CommissionBreakdown
-        open={Boolean(breakdownFor)}
-        onClose={() => setBreakdownFor(null)}
-        employeeName={breakdownFor ? nameOf(breakdownFor) : ''}
-        period={period ?? ''}
-        entries={breakdown}
+        open={breakdown !== null}
+        onClose={() => setBreakdown(null)}
+        employeeName={breakdown?.name ?? ''}
+        period={breakdown?.period ?? ''}
+        entries={breakdown?.entries ?? []}
       />
 
       <ConfirmModal

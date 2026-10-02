@@ -1,5 +1,7 @@
 import { api } from '../apiClient';
 import type { ApiPage } from './catalogApi';
+import type { ApiBranch } from './accessApi';
+import type { ApiBranchSettings } from './settingsApi';
 
 /**
  * Sales, customers and finance.
@@ -19,6 +21,11 @@ export interface CommitSalePayload {
   discountId?: string | null;
   discountH: number;
   tenderedH?: number | null;
+  /** Who approved a discount above its threshold (the cashier may name themself). */
+  approvedByUserId?: string | null;
+  /** Needed only when the approver is someone other than the caller. */
+  approverPassword?: string | null;
+  orderType?: 'dine_in' | 'takeaway' | 'delivery' | 'other' | null;
   lines: {
     itemId: string;
     quantity: number;
@@ -27,6 +34,36 @@ export interface CommitSalePayload {
     note?: string | null;
   }[];
   payments: { method: string; amountH: number; reference?: string | null }[];
+}
+
+export interface CreditNoteRow {
+  id: string;
+  noteNumber: string;
+  saleId: string;
+  saleInvoiceNumber: string;
+  lines: {
+    saleLineId: string;
+    itemId: string;
+    nameAr: string;
+    nameEn: string;
+    quantity: number;
+    unitPriceH: number;
+    amountH: number;
+  }[];
+  reason: string;
+  note: string;
+  subtotalH: number;
+  taxH: number;
+  totalH: number;
+  cogsH: number;
+  refundMethod: string;
+  issuedBy: string;
+  issuedAt: string;
+  branchId?: string;
+  customerId?: string;
+  entryId?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CommittedSale {
@@ -72,8 +109,31 @@ export const salesApi = {
     }>(`/api/sales/${saleId}`);
   },
 
+  /** 409 sale_has_returns once a credit note exists against the sale. */
   void(saleId: string, reason: string) {
     return api.post<void>(`/api/sales/${saleId}/void`, { reason });
+  },
+
+  /** Credit notes against a sale, newest first. */
+  returns(saleId: string) {
+    return api.get<CreditNoteRow[]>(`/api/sales/${saleId}/returns`);
+  },
+
+  /** {saleLineId: quantity still returnable}. */
+  returnsRemaining(saleId: string) {
+    return api.get<Record<string, number>>(`/api/sales/${saleId}/returns/remaining`);
+  },
+
+  issueReturn(
+    saleId: string,
+    payload: {
+      lines: { saleLineId: string; quantity: number }[];
+      reason: string;
+      note?: string | null;
+      refundMethod: string;
+    },
+  ) {
+    return api.post<CreditNoteRow>(`/api/sales/${saleId}/returns`, payload);
   },
 };
 
@@ -102,6 +162,23 @@ export const customerApi = {
     return api.post<{ customerId: string }>('/api/customers', payload);
   },
 
+  /** Returns the stored customer row, same shape as GET /api/customers/{id}. */
+  update(
+    customerId: string,
+    payload: {
+      nameAr: string;
+      nameEn: string;
+      phone?: string | null;
+      email?: string | null;
+      vatNumber?: string | null;
+      customerType?: string | null;
+      creditLimitH: number;
+      status?: 'active' | 'inactive';
+    },
+  ) {
+    return api.put<Record<string, unknown>>(`/api/customers/${customerId}`, payload);
+  },
+
   collect(
     customerId: string,
     payload: {
@@ -114,20 +191,118 @@ export const customerApi = {
     return api.post<{ entryId: string }>(`/api/customers/${customerId}/collect`, payload);
   },
 
+  /** Rows carry balanceH, creditLimitH and lifetime collectedH. */
   receivables() {
     return api.get<Record<string, unknown>[]>('/api/customers/receivables');
   },
+
+  receivablesSummary(query: { from?: string; to?: string } = {}) {
+    return api.get<{
+      outstandingH: number;
+      withBalance: number;
+      overLimit: number;
+      collectedH: number;
+      collectionCount: number;
+    }>('/api/customers/receivables/summary', { query });
+  },
 };
 
-export interface FinanceSummary {
+/** One scope's ledger figures for a month (P&L lines) and balances. */
+export interface FinanceFigures {
+  /** Net of returns. */
   revenueH: number;
+  /** What returns took off revenue this month. */
+  returnsH: number;
   cogsH: number;
   expensesH: number;
+  /** Operating expenses split by account (5200/6000/6100/6200/6300). */
+  expensesByAccount: {
+    accountCode: string;
+    nameAr: string;
+    nameEn: string;
+    name: string;
+    amountH: number;
+  }[];
   cashH: number;
   receivableH: number;
   payableH: number;
   prepaidH: number;
   cardClearingH: number;
+}
+
+export interface FinanceSummary extends FinanceFigures {
+  /** How the month's sales were tendered; cash is net of change. */
+  paymentMix: {
+    cashH: number;
+    cardH: number;
+    creditH: number;
+    bankH: number;
+    totalH: number;
+    saleCount: number;
+  };
+  refunds: {
+    cashH: number;
+    cardH: number;
+    creditH: number;
+    bankH: number;
+    totalH: number;
+    noteCount: number;
+  };
+  /**
+   * With a branch: the entries tagged to no branch (business-wide costs),
+   * kept apart from the branch's own figures. Null without a branch.
+   */
+  businessWide: FinanceFigures | null;
+}
+
+export interface ApiCommissionEntry {
+  id: string;
+  saleId: string;
+  invoiceNumber: string;
+  userId: string;
+  userNameAr: string;
+  userNameEn: string;
+  itemId: string;
+  itemNameAr: string;
+  itemNameEn: string;
+  lineGrossH: number;
+  amountH: number;
+  basis: 'percentage' | 'fixed';
+  rateAtSale: number;
+  branchId?: string;
+  earnedAt: string;
+  periodMonth: string;
+  payrollRunId?: string;
+  paid: boolean;
+  saleStatus: string;
+}
+
+export interface ApiJournalEntry {
+  entryId: string;
+  reference: string;
+  kind: string;
+  sourceReference?: string;
+  descriptionAr?: string;
+  descriptionEn: string;
+  postedAtUtc: string;
+  branchId?: string;
+  actor: string;
+  totalDebitH: number;
+  totalCreditH: number;
+  reversesEntryId?: string;
+  reversedByEntryId?: string;
+  reversalReason?: string;
+  lines: {
+    journalLineId: number;
+    accountCode: string;
+    accountNameAr: string;
+    accountNameEn: string;
+    accountName: string;
+    accountType: string;
+    debitH: number;
+    creditH: number;
+    memo: string;
+  }[];
 }
 
 export const financeApi = {
@@ -156,7 +331,7 @@ export const financeApi = {
   },
 
   summary(query: { branchId?: string | null; month?: string } = {}) {
-    return api.get<FinanceSummary>('/api/finance/summary', {
+    return api.get<Partial<FinanceSummary>>('/api/finance/summary', {
       query: { branchId: query.branchId ?? undefined, month: query.month },
     });
   },
@@ -164,17 +339,33 @@ export const financeApi = {
   commission(query: { userId?: string; month?: string } = {}) {
     return api.get<Record<string, unknown>[]>('/api/finance/commission', { query });
   },
+
+  /** The individual frozen commission lines behind the totals. */
+  commissionEntries(query: {
+    userId?: string;
+    month?: string;
+    saleId?: string;
+    branchId?: string | null;
+    paid?: boolean;
+  } = {}) {
+    return api.get<ApiCommissionEntry[]>('/api/finance/commission/entries', {
+      query: { ...query, branchId: query.branchId ?? undefined },
+    });
+  },
+
+  /** A journal entry with its lines. */
+  entry(entryId: string) {
+    return api.get<ApiJournalEntry>(`/api/finance/ledger/${entryId}`);
+  },
 };
 
 export const referenceApi = {
   branches() {
-    return api.get<
-      { branchId: string; code: string; nameAr: string; nameEn: string; isActive: boolean }[]
-    >('/api/branches');
+    return api.get<ApiBranch[]>('/api/branches');
   },
 
   branchSettings(branchId: string) {
-    return api.get<Record<string, unknown>>(`/api/branches/${branchId}/settings`);
+    return api.get<ApiBranchSettings>(`/api/branches/${branchId}/settings`);
   },
 
   languages() {

@@ -181,10 +181,16 @@ export interface JournalEntry extends Timestamped {
   /** Set when this entry reverses another. */
   reversesEntryId: ID | null;
   reversedByEntryId: ID | null;
+  /** The server's totals — present on list rows, which carry no lines. */
+  totalDebitH?: number;
+  totalCreditH?: number;
 }
 
 /** Totals for an entry. Used for display and for the balance check. */
 export function entryTotals(entry: JournalEntry): { debitH: number; creditH: number } {
+  if (entry.lines.length === 0 && entry.totalDebitH !== undefined) {
+    return { debitH: entry.totalDebitH, creditH: entry.totalCreditH ?? 0 };
+  }
   return entry.lines.reduce(
     (totals, line) => ({
       debitH: totals.debitH + line.debitH,
@@ -547,9 +553,7 @@ export type AgeBucket = 'current' | 'd30' | 'd60' | 'd90';
  * difference, and the difference is what decides who to chase.
  */
 export function ageBucket(oldestIso: string, now: Date = new Date()): AgeBucket {
-  const days = Math.floor(
-    (now.getTime() - new Date(oldestIso).getTime()) / 86_400_000,
-  );
+  const days = ageInDays(oldestIso, now);
 
   if (days <= 30) return 'current';
   if (days <= 60) return 'd30';
@@ -558,7 +562,10 @@ export function ageBucket(oldestIso: string, now: Date = new Date()): AgeBucket 
 }
 
 export function ageInDays(oldestIso: string, now: Date = new Date()): number {
-  return Math.max(0, Math.floor((now.getTime() - new Date(oldestIso).getTime()) / 86_400_000));
+  const then = new Date(oldestIso).getTime();
+  /* No date known: not aged, rather than NaN days. */
+  if (Number.isNaN(then)) return 0;
+  return Math.max(0, Math.floor((now.getTime() - then) / 86_400_000));
 }
 
 export interface AgingRow {
@@ -778,6 +785,8 @@ export interface PayrollLine {
   nameEn: string;
   baseSalaryH: number;
   commissionH: number;
+  /** Added to pay on top of salary and commission (housing, transport, …). */
+  allowancesH: number;
   deductionsH: number;
   netPayH: number;
 }
@@ -795,5 +804,5 @@ export interface PayrollRun extends Timestamped {
 }
 
 export function netPayH(line: Omit<PayrollLine, 'netPayH'>): number {
-  return line.baseSalaryH + line.commissionH - line.deductionsH;
+  return line.baseSalaryH + line.commissionH + line.allowancesH - line.deductionsH;
 }

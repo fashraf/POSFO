@@ -8,9 +8,11 @@ export {
 } from './http';
 
 export {
+  branchStaffService,
   catalogService,
   categoryService,
   staffService,
+  type BranchStaff,
   type CatalogListQuery,
   type CatalogSummary,
 } from './catalogService';
@@ -34,6 +36,7 @@ export {
   type ReceiveStockInput,
   type RecordMovementInput,
   type VendorInput,
+  type VendorWithBalance,
 } from './inventoryService';
 export { discountService, type ResolvedDiscount } from './discountService';
 export { kitchenService } from './kitchenService';
@@ -41,8 +44,13 @@ export { billTemplateService, companyService } from './companyService';
 export { notificationService } from './notificationService';
 export { printGroupService, printService } from './printService';
 export { settingsService } from './settingsService';
-export { credit, debit, ledgerService, type LedgerQuery, type PostInput } from './ledgerService';
-export { expenseCategoryService, expenseService, type ExpenseInput } from './expenseService';
+export { ledgerService, type LedgerQuery } from './ledgerService';
+export {
+  expenseCategoryService,
+  expenseService,
+  type ExpenseInput,
+  type RecognisedExpense,
+} from './expenseService';
 export {
   drawerService,
   settlementService,

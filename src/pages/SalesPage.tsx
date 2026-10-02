@@ -117,9 +117,8 @@ export default function SalesPage() {
     setPage(1);
   }, [debouncedSearch, status, method]);
 
-  /* Status and method are narrowed here rather than in the service because the
-     mock list endpoint only supports a text search; the real API will filter
-     server-side and this block goes away. */
+  /* Status and method are narrowed on the loaded page: the list route filters
+     by branch, text and date only. */
   const visible = useMemo(
     () =>
       sales.filter((sale) => {
@@ -176,7 +175,7 @@ export default function SalesPage() {
     if (!selected) return false;
 
     const result = await safeCall(() =>
-      returnsService.issue({ ...input, saleId: selected.id, issuedBy: 'Ahmed Ali' }),
+      returnsService.issue({ ...input, saleId: selected.id }),
     );
 
     if (!result.ok) {
@@ -203,7 +202,7 @@ export default function SalesPage() {
   async function handleVoid(reason: string): Promise<boolean> {
     if (!selected) return false;
 
-    const result = await safeCall(() => salesService.voidSale(selected.id, reason, 'Ahmed Ali'));
+    const result = await safeCall(() => salesService.voidSale(selected.id, reason));
 
     if (!result.ok) {
       toast.error(t('sales.toast.failed'), result.error.message);
