@@ -1596,6 +1596,7 @@ export const ar: Dictionary = {
       exact: 'بالضبط',
       creditNeedsCustomer: 'اختر عميلًا قبل البيع بالآجل.',
       creditOverLimit: 'هذا سيتجاوز بـ{name} حدّ الائتمان.',
+      cardOverTotal: 'لا يمكن أن يتجاوز مبلغ البطاقة {amount}. الباقي يُعاد نقدًا فقط.',
       shortfall: 'ما زال ناقصًا {amount}',
       newOutstanding: 'الرصيد الجديد',
       currentOutstanding: 'الرصيد الحالي',

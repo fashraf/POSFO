@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Receipt, RotateCcw, TrendingUp } from 'lucide-react';
 import {
@@ -77,6 +77,7 @@ export default function SalesPage() {
   const debouncedSearch = useDebouncedValue(search, 300);
 
   const [selected, setSelected] = useState<Sale | null>(null);
+  const openedSaleId = useRef<string | null>(null);
   const [notes, setNotes] = useState<CreditNote[]>([]);
   const [remaining, setRemaining] = useState<Record<string, number>>({});
 
@@ -154,14 +155,27 @@ export default function SalesPage() {
   };
 
   async function openSale(sale: Sale) {
+    /* The list row is a header only — no lines, no payments — so it opens the
+       drawer straight away and the full sale replaces it once fetched. Without
+       that fetch the drawer showed no items, and with no items nothing could
+       be returned. */
+    openedSaleId.current = sale.id;
     setSelected(sale);
+    setNotes([]);
+    setRemaining({});
     detail.open();
 
-    const [noteResult, remainingResult] = await Promise.all([
+    const [saleResult, noteResult, remainingResult] = await Promise.all([
+      safeCall(() => salesService.get(sale.id)),
       safeCall(() => returnsService.notesFor(sale.id)),
       safeCall(() => returnsService.remaining(sale.id)),
     ]);
 
+    /* Another sale was opened while this one loaded. */
+    if (openedSaleId.current !== sale.id) return;
+
+    if (saleResult.ok) setSelected(saleResult.data);
+    else toast.error(t('sales.toast.failed'), saleResult.error.message);
     setNotes(noteResult.ok ? noteResult.data : []);
     setRemaining(remainingResult.ok ? remainingResult.data : {});
   }

@@ -21,6 +21,7 @@ export {
   customerService,
   returnsService,
   salesService,
+  newSaleKey,
   type CommitSaleInput,
   type CustomerInput,
   type RecordPaymentInput,

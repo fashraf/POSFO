@@ -59,20 +59,31 @@ export interface CommitSaleInput {
    * token; this only fills the receipt if the stored name comes back empty.
    */
   cashierName?: string;
+  /**
+   * One key per sale, from newSaleKey(), kept by the caller across retries.
+   * A retry with the same key gets the original sale back instead of a
+   * second invoice — which is what a lost response followed by "try again"
+   * needs. Omitted, each call is treated as a new sale.
+   */
+  idempotencyKey?: string;
+}
+
+/** A fresh idempotency key for one sale. */
+export function newSaleKey(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `sal-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  );
 }
 
 export const salesService = {
   async commit(input: CommitSaleInput): Promise<Sale> {
     /*
-     * One key for this attempt, generated before the first call.
-     *
-     * If the request times out, the retry below sends the SAME key and the
-     * server returns the original sale rather than creating a second one.
-     * Generating it per call would defeat the purpose entirely.
+     * The key belongs to the sale, not to the call: the till keeps it across
+     * attempts. Generating one here on every call made each retry a new sale,
+     * so a timed-out commit that had in fact succeeded was recorded twice.
      */
-    const idempotencyKey =
-      globalThis.crypto?.randomUUID?.() ??
-      `sal-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const idempotencyKey = input.idempotencyKey ?? newSaleKey();
 
     const result = await salesApi.commit({
       idempotencyKey,

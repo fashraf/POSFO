@@ -24,6 +24,7 @@ import {
   settingsService,
   safeCall,
   salesService,
+  newSaleKey,
   HttpError,
   type BranchStaff,
 } from '@/services';
@@ -61,6 +62,19 @@ export default function PosPage() {
     (language === 'ar' ? user?.nameAr : user?.nameEn) || user?.nameEn || user?.username || '';
   const cart = usePosCart();
   const payment = useDisclosure();
+
+  /*
+   * One idempotency key per sale, kept until that sale is confirmed.
+   *
+   * When a commit's response is lost, the cashier sees a failure and tries
+   * again. With the same key the server recognises the sale it already
+   * recorded and returns it; a new key per click made a second invoice.
+   * Dropped once the sale goes through or the cart is emptied.
+   */
+  const saleKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (cart.lines.length === 0) saleKey.current = null;
+  }, [cart.lines.length]);
   const scanRef = useRef<HTMLInputElement>(null);
 
   const [items, setItems] = useState<CatalogItem[]>([]);
@@ -293,8 +307,12 @@ export default function PosPage() {
     if (result.cashH > 0) payments.push({ method: 'cash', amountH: result.cashH });
     if (result.creditH > 0) payments.push({ method: 'credit', amountH: result.creditH });
 
+    saleKey.current ??= newSaleKey();
+    const idempotencyKey = saleKey.current;
+
     const saleResult = await safeCall(() =>
       salesService.commit({
+        idempotencyKey,
         lines: cart.lines,
         payments: payments.length > 0 ? payments : [{ method: 'cash', amountH: cart.totals.totalH }],
         customerId: cart.customerId,
@@ -329,6 +347,7 @@ export default function PosPage() {
     }
 
     const sale = saleResult.data;
+    saleKey.current = null;
 
     /* Discount usage is counted by the commit itself, from the discountId
        sent above — counting it here as well would double it. */

@@ -155,7 +155,20 @@ export function CheckoutModal({
   }, [mode, cashH, cardH, targetH]);
 
   const shortfallH = Math.max(0, targetH - paidH);
-  const changeH = Math.max(0, paidH - targetH);
+
+  /* Change only ever comes out of the cash: a card is charged exactly what it
+     covers. So in a split payment the card may not exceed the total, and the
+     change is the cash beyond what the card leaves to pay. Working it out as
+     cash + card − total told the cashier to hand back the card's excess too,
+     which the server (rightly) did not count — the drawer came up short. */
+  const cardBlocker =
+    mode === 'mixed' && cardH > targetH
+      ? t('checkout.payment.cardOverTotal', { amount: fromMinorUnits(targetH) })
+      : null;
+  const changeH =
+    mode === 'mixed'
+      ? Math.max(0, cashH - Math.max(0, targetH - cardH))
+      : Math.max(0, paidH - targetH);
 
   /* Credit is the only mode that needs a customer, and it must fit their
      remaining limit. Both are checked again in the service. */
@@ -176,6 +189,7 @@ export function CheckoutModal({
   const canComplete =
     lines.length > 0 &&
     !creditBlocker &&
+    !cardBlocker &&
     !servedByBlocker &&
     (mode === 'credit' || shortfallH === 0) &&
     !submitting;
@@ -201,7 +215,7 @@ export function CheckoutModal({
           /* Change always comes out of the cash side — you cannot hand back
              change on a card. */
           cashH: Math.max(0, targetH - cardH),
-          cardH: Math.min(cardH, targetH),
+          cardH,
           creditH: 0,
           tenderedH: cashH,
           changeH,
@@ -528,6 +542,7 @@ export function CheckoutModal({
                       inputSize="sm"
                       value={card}
                       onChange={(event) => setCard(event.target.value)}
+                      invalid={Boolean(cardBlocker)}
                       placeholder="0.00"
                     />
                   </label>
@@ -600,9 +615,9 @@ export function CheckoutModal({
             )}
 
             {/* Running state: what is still owed, or what to hand back. */}
-            {creditBlocker ? (
+            {creditBlocker || cardBlocker ? (
               <Alert tone="danger" compact icon={<AlertTriangle className="h-3.5 w-3.5" />}>
-                {creditBlocker}
+                {creditBlocker ?? cardBlocker}
               </Alert>
             ) : shortfallH > 0 && mode !== 'credit' ? (
               <div className="flex items-center justify-between rounded-md border border-warning-100 bg-warning-50 px-3 py-2.5">

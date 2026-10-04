@@ -1608,6 +1608,7 @@ export const en = {
       exact: 'Exact',
       creditNeedsCustomer: 'Choose a customer before charging to credit.',
       creditOverLimit: 'This would take {name} past their credit limit.',
+      cardOverTotal: 'The card cannot pay more than {amount}. Change is only given in cash.',
       shortfall: 'Still short by {amount}',
       newOutstanding: 'New outstanding',
       currentOutstanding: 'Current outstanding',
