@@ -25,6 +25,7 @@ import {
 import { CustomerDetail } from '@/features/customers/CustomerDetail';
 import { CustomerWizard } from '@/features/customers/CustomerWizard';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
+import { useSearchParamSeed } from '@/hooks/useSearchParamSeed';
 import { useDisclosure } from '@/hooks/useDisclosure';
 import { useToast } from '@/contexts/ToastContext';
 import { useI18n, useTranslation } from '@/i18n';
@@ -66,6 +67,8 @@ export default function CustomersPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
+  /* The header search opens this page with ?q=<customer name>. */
+  useSearchParamSeed(setSearch);
   const [filter, setFilter] = useState<FilterValue>('all');
   const debouncedSearch = useDebouncedValue(search, 300);
 

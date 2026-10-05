@@ -87,20 +87,21 @@ export const kitchenService = {
   },
 
   async setStatus(id: string, status: KitchenOrderStatus): Promise<KitchenOrder> {
-    /* Completing from the board marks every line done, so the progress bar
-       never disagrees with the status badge. The route sets the status only,
-       so the lines are brought up first. */
-    if (status === 'completed' || status === 'ready') {
-      const existing = await fetchOrder(id);
-      await Promise.all(
-        existing.items
-          .filter((item) => item.completedQuantity < item.quantity)
-          .map((item) => kitchenApi.setItemProgress(id, Number(item.id), item.quantity)),
-      );
-    }
-
+    /* One request. Ready and completed mark every line done on the server in
+       the same transaction, so the progress bar never disagrees with the
+       status badge and there is no chain of per-line calls to break. */
     await kitchenApi.setStatus(id, status);
     return fetchOrder(id);
+  },
+
+  /**
+   * Every line done in one step: the order is ready. An order already ready
+   * (or completed) only has its lines brought up, by the same route.
+   */
+  async completeAll(order: KitchenOrder): Promise<KitchenOrder> {
+    const target: KitchenOrderStatus =
+      order.status === 'open' || order.status === 'preparing' ? 'ready' : order.status;
+    return kitchenService.setStatus(order.id, target);
   },
 
   /** Tick one line's completed count up or down. */

@@ -20,6 +20,36 @@ export interface PrintGroup extends Timestamped {
 
 export type DocumentKind = 'customer_receipt' | 'group_ticket';
 
+/**
+ * The title a customer receipt carries.
+ *
+ * A Saudi B2C receipt is a simplified tax invoice, and ZATCA requires it to
+ * say so, in Arabic (English alongside on a bilingual bill). Group tickets —
+ * kitchen, bar, packing — are not invoices and never carry it.
+ */
+export const SIMPLIFIED_TAX_INVOICE_TITLE = {
+  ar: 'فاتورة ضريبية مبسطة',
+  en: 'Simplified Tax Invoice',
+} as const;
+
+/**
+ * The template switches a customer receipt cannot turn off: the seller's VAT
+ * number, the VAT line and the QR code are mandatory on a simplified tax
+ * invoice. The server refuses to save them off (62031–62033); the builder
+ * shows them locked, and anything rendering a customer receipt forces them on.
+ */
+export const TAX_INVOICE_REQUIRED_FIELDS = ['showVatNumber', 'showVat', 'showZatcaQr'] as const;
+
+export type TaxInvoiceRequiredField = (typeof TAX_INVOICE_REQUIRED_FIELDS)[number];
+
+/** A template as a receipt must render it: tax-invoice fields forced on for customers. */
+export function withTaxInvoiceFields<
+  T extends { audience: 'customer' | 'group' } & Record<TaxInvoiceRequiredField, boolean>,
+>(template: T): T {
+  if (template.audience !== 'customer') return template;
+  return { ...template, showVatNumber: true, showVat: true, showZatcaQr: true };
+}
+
 /** One printable document produced from an order. */
 export interface PrintDocument {
   id: string;
@@ -48,8 +78,9 @@ export function buildPrintDocuments(
       id: 'customer',
       kind: 'customer_receipt',
       groupId: null,
-      titleAr: 'فاتورة العميل',
-      titleEn: 'Customer bill',
+      /* A customer receipt is a simplified tax invoice, and its title says so. */
+      titleAr: SIMPLIFIED_TAX_INVOICE_TITLE.ar,
+      titleEn: SIMPLIFIED_TAX_INVOICE_TITLE.en,
       lines,
     },
   ];

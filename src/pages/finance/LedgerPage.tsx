@@ -43,6 +43,7 @@ const KINDS: TransactionKind[] = [
   'expense',
   'expense_recognition',
   'customer_collection',
+  'customer_opening',
   'supplier_payment',
   'purchase',
   'card_settlement',

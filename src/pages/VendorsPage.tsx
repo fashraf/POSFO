@@ -40,6 +40,7 @@ import {
   type WizardStep,
 } from '@/components/ui';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
+import { useSearchParamSeed } from '@/hooks/useSearchParamSeed';
 import { useDisclosure } from '@/hooks/useDisclosure';
 import { useToast } from '@/contexts/ToastContext';
 import { useI18n, useTranslation } from '@/i18n';
@@ -50,6 +51,17 @@ import type { Vendor } from '@/types/catalog';
 import type { VendorLedgerEntry } from '@/types/inventory';
 
 type VendorRow = Vendor & { balanceH: number };
+
+/** Which wizard step shows each field the server can name in fieldErrors. */
+const VENDOR_FIELD_STEP: Record<string, number> = {
+  nameAr: 0,
+  nameEn: 0,
+  vatNumber: 0,
+  city: 0,
+  contactPerson: 1,
+  phone: 1,
+  email: 1,
+};
 
 const EMPTY_FORM = {
   nameAr: '',
@@ -78,6 +90,8 @@ export default function VendorsPage() {
   });
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  /* The header search opens this page with ?q=<vendor name>. */
+  useSearchParamSeed(setSearch);
   const debouncedSearch = useDebouncedValue(search, 300);
 
   const [selected, setSelected] = useState<VendorRow | null>(null);
@@ -88,6 +102,8 @@ export default function VendorsPage() {
   const [step, setStep] = useState(0);
   const [form, setForm] = useState(EMPTY_FORM);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  /* A refusal that belongs to no field on the form. */
+  const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   /* Payment state */
@@ -117,6 +133,7 @@ export default function VendorsPage() {
     setStep(0);
     setForm(EMPTY_FORM);
     setErrors({});
+    setFormError(null);
   }, [wizard.isOpen]);
 
   useEffect(() => {
@@ -161,6 +178,7 @@ export default function VendorsPage() {
   async function createVendor() {
     setSubmitting(true);
     setErrors({});
+    setFormError(null);
 
     try {
       await vendorService.create(form as VendorInput);
@@ -169,17 +187,38 @@ export default function VendorsPage() {
       wizard.close();
     } catch (caught) {
       const failure = caught as { fieldErrors?: Record<string, string[]>; message?: string };
-      if (failure.fieldErrors) {
-        const mapped = Object.fromEntries(
-          Object.entries(failure.fieldErrors)
-            .filter(([, messages]) => messages.length > 0)
-            .map(([field, messages]) => [field, messages[0]]),
-        );
-        setErrors(mapped);
-        const identity = ['nameAr', 'nameEn'];
-        setStep(Object.keys(mapped).some((key) => identity.includes(key)) ? 0 : 1);
-      } else {
-        toast.error(t('vendors.toast.failed'), failure.message);
+      const fieldEntries = Object.entries(failure.fieldErrors ?? {}).filter(
+        ([, messages]) => messages.length > 0,
+      );
+
+      /*
+       * Put each server refusal beside its field and open the step that holds
+       * it. vatNumber lives on the identity step with the names — sending it to
+       * the contact step is what made an invalid VAT number look like nothing
+       * happened. A key no field shows (paymentTermDays, status), or no key at
+       * all, is shown above the wizard so it is never silently dropped.
+       *
+       * The field text from the server is English only; the top-level message
+       * is in the user's language, so a single-field refusal uses that.
+       */
+      const mapped: Record<string, string> = {};
+      const unplaced: string[] = [];
+      for (const [field, messages] of fieldEntries) {
+        const text = fieldEntries.length === 1 && failure.message ? failure.message : messages[0];
+        if (field in VENDOR_FIELD_STEP) mapped[field] = text;
+        else unplaced.push(text);
+      }
+
+      setErrors(mapped);
+
+      const stepsWithErrors = Object.keys(mapped).map((field) => VENDOR_FIELD_STEP[field]);
+      if (stepsWithErrors.length > 0) setStep(Math.min(...stepsWithErrors));
+
+      if (unplaced.length > 0 || fieldEntries.length === 0) {
+        const message =
+          unplaced.length > 0 ? unplaced.join(' ') : (failure.message ?? t('vendors.toast.failed'));
+        setFormError(message);
+        toast.error(t('vendors.toast.failed'), message);
       }
     } finally {
       setSubmitting(false);
@@ -474,6 +513,11 @@ export default function VendorsPage() {
         title={t('vendors.wizard.title')}
       >
         <div className="min-h-[22rem]">
+          {formError && (
+            <Alert tone="danger" compact className="mb-4">
+              {formError}
+            </Alert>
+          )}
           <Wizard
             steps={steps}
             currentIndex={step}

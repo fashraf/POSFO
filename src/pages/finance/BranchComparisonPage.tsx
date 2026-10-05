@@ -106,7 +106,10 @@ export default function BranchComparisonPage() {
       const revenueH = summary?.revenueH ?? 0;
       const cogsH = summary?.cogsH ?? 0;
       const expensesH = summary?.expensesH ?? 0;
-      const profitH = revenueH - cogsH - expensesH;
+      /* Gross profit by the shared rule (net revenue ex VAT less the cost of
+         goods and services sold), then the branch's own expenses. Margin is
+         on that net revenue, never on VAT-inclusive takings. */
+      const profitH = (summary?.grossProfitH ?? revenueH - cogsH) - expensesH;
 
       return {
         id: branch.id,

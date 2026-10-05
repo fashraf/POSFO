@@ -80,6 +80,15 @@ function daysSince(iso: string | null): number | null {
  * Three columns because the cashier is answering three separate questions at
  * once — what is being bought, who is buying it, and how they are paying — and
  * a wizard would hide two of them at every step.
+ *
+ * Responsive, because the till is often a tablet:
+ *  - xl (1280px+): the three columns side by side;
+ *  - md to xl (768–1279px, a landscape or portrait tablet): two columns —
+ *    items over customer on the left, payment the full height on the right,
+ *    with the amount due at the top of it so it is never pushed out of view;
+ *  - below md: one column, and the dialog body scrolls as a whole.
+ * Three columns at 80vw on a ~1000px screen left the payment column about
+ * 250px wide and the amount due clipped.
  */
 export function CheckoutModal({
   open,
@@ -155,7 +164,20 @@ export function CheckoutModal({
   }, [mode, cashH, cardH, targetH]);
 
   const shortfallH = Math.max(0, targetH - paidH);
-  const changeH = Math.max(0, paidH - targetH);
+
+  /* Change only ever comes out of the cash: a card is charged exactly what it
+     covers. So in a split payment the card may not exceed the total, and the
+     change is the cash beyond what the card leaves to pay. Working it out as
+     cash + card − total told the cashier to hand back the card's excess too,
+     which the server (rightly) did not count — the drawer came up short. */
+  const cardBlocker =
+    mode === 'mixed' && cardH > targetH
+      ? t('checkout.payment.cardOverTotal', { amount: fromMinorUnits(targetH) })
+      : null;
+  const changeH =
+    mode === 'mixed'
+      ? Math.max(0, cashH - Math.max(0, targetH - cardH))
+      : Math.max(0, paidH - targetH);
 
   /* Credit is the only mode that needs a customer, and it must fit their
      remaining limit. Both are checked again in the service. */
@@ -176,6 +198,7 @@ export function CheckoutModal({
   const canComplete =
     lines.length > 0 &&
     !creditBlocker &&
+    !cardBlocker &&
     !servedByBlocker &&
     (mode === 'credit' || shortfallH === 0) &&
     !submitting;
@@ -201,7 +224,7 @@ export function CheckoutModal({
           /* Change always comes out of the cash side — you cannot hand back
              change on a card. */
           cashH: Math.max(0, targetH - cardH),
-          cardH: Math.min(cardH, targetH),
+          cardH,
           creditH: 0,
           tenderedH: cashH,
           changeH,
@@ -229,13 +252,13 @@ export function CheckoutModal({
         size="xl"
         title={t('checkout.title')}
         dismissible={!submitting}
-        className="h-[80vh] max-h-[80vh] w-[80vw] max-w-[80vw] sm:max-w-[80vw]"
+        className="h-[92svh] max-h-[92svh] sm:h-[90vh] sm:max-h-[90vh] sm:w-[94vw] sm:max-w-[94vw] lg:w-[90vw] lg:max-w-[90vw] xl:h-[80vh] xl:max-h-[80vh] xl:w-[80vw] xl:max-w-6xl"
         footer={
           /* Totals live along the bottom, spanning all three columns, so the
              number the cashier says out loud sits next to the button that
              commits it. */
-          <div className="flex w-full flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <dl className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+          <div className="flex w-full flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <dl className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1 text-xs">
               <div className="flex items-center gap-1.5">
                 <dt className="text-ink-500">{t('checkout.items.subtotal')}</dt>
                 <dd>
@@ -252,7 +275,7 @@ export function CheckoutModal({
                     )}
                   </dt>
                   <dd>
-                    <CurrencyDisplay amount={-totals.discountH} className="text-danger-600" />
+                    <CurrencyDisplay amount={-totals.discountExH} className="text-danger-600" />
                   </dd>
                 </div>
               )}
@@ -286,14 +309,14 @@ export function CheckoutModal({
           </div>
         }
       >
-        <div className="grid h-full min-h-0 gap-4 lg:grid-cols-3">
+        <div className="grid gap-4 md:h-full md:min-h-0 md:grid-cols-2 md:grid-rows-[minmax(0,1fr)_minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(19rem,1fr)] xl:grid-rows-[minmax(0,1fr)]">
           {/* Items */}
-          <section className="flex min-h-0 flex-col gap-2">
+          <section className="flex min-h-0 flex-col gap-2 md:col-start-1 md:row-start-1">
             <h3 className="shrink-0 text-2xs font-semibold uppercase tracking-wider text-ink-400">
               {t('checkout.columns.items')}
             </h3>
 
-            <ul className="min-h-0 flex-1 divide-y divide-ink-100 overflow-y-auto rounded-md border border-ink-200">
+            <ul className="max-h-56 min-h-0 flex-1 divide-y divide-ink-100 overflow-y-auto rounded-md border border-ink-200 md:max-h-none">
               {lines.map((line) => (
                 <li key={line.id} className="flex items-center justify-between gap-2 px-3 py-1.5">
                   <span className="min-w-0">
@@ -315,7 +338,7 @@ export function CheckoutModal({
           </section>
 
           {/* Customer */}
-          <section className="flex min-h-0 flex-col gap-2 overflow-y-auto">
+          <section className="flex min-h-0 flex-col gap-2 md:col-start-1 md:row-start-2 md:overflow-y-auto xl:col-start-2 xl:row-start-1">
             <h3 className="shrink-0 text-2xs font-semibold uppercase tracking-wider text-ink-400">
               {t('checkout.columns.customer')}
             </h3>
@@ -473,12 +496,24 @@ export function CheckoutModal({
           </section>
 
           {/* Payment */}
-          <section className="flex min-h-0 flex-col gap-2 overflow-y-auto">
+          <section className="flex min-h-0 min-w-0 flex-col gap-2 md:col-start-2 md:row-span-2 md:row-start-1 md:overflow-y-auto xl:col-start-3 xl:row-span-1">
             <h3 className="shrink-0 text-2xs font-semibold uppercase tracking-wider text-ink-400">
               {t('checkout.columns.payment')}
             </h3>
 
-            <div className="grid grid-cols-2 gap-1.5">
+            {/* Amount due is the anchor for everything in this column, so it
+                comes first: whatever the height, it is the part that shows. */}
+            <div className="shrink-0 rounded-md border border-brand-200 bg-brand-50/60 px-3 py-2.5 text-center">
+              <p className="text-2xs font-medium uppercase tracking-wide text-brand-700">
+                {t('checkout.payment.due')}
+              </p>
+              <CurrencyDisplay
+                amount={targetH}
+                className="mt-0.5 block break-words text-xl font-semibold leading-tight text-ink-900 sm:text-2xl"
+              />
+            </div>
+
+            <div className="grid shrink-0 grid-cols-2 gap-1.5">
               {MODES.map((entry) => {
                 const Icon = entry.icon;
                 const selected = mode === entry.value;
@@ -506,17 +541,6 @@ export function CheckoutModal({
               })}
             </div>
 
-            {/* Amount due is the anchor for everything in this column. */}
-            <div className="rounded-md border border-brand-200 bg-brand-50/60 px-3 py-2.5 text-center">
-              <p className="text-2xs font-medium uppercase tracking-wide text-brand-700">
-                {t('checkout.payment.due')}
-              </p>
-              <CurrencyDisplay
-                amount={targetH}
-                className="mt-0.5 block text-2xl font-semibold text-ink-900"
-              />
-            </div>
-
             {(mode === 'cash' || mode === 'mixed') && (
               <div className="space-y-2">
                 {mode === 'mixed' && (
@@ -528,6 +552,7 @@ export function CheckoutModal({
                       inputSize="sm"
                       value={card}
                       onChange={(event) => setCard(event.target.value)}
+                      invalid={Boolean(cardBlocker)}
                       placeholder="0.00"
                     />
                   </label>
@@ -600,9 +625,9 @@ export function CheckoutModal({
             )}
 
             {/* Running state: what is still owed, or what to hand back. */}
-            {creditBlocker ? (
+            {creditBlocker || cardBlocker ? (
               <Alert tone="danger" compact icon={<AlertTriangle className="h-3.5 w-3.5" />}>
-                {creditBlocker}
+                {creditBlocker ?? cardBlocker}
               </Alert>
             ) : shortfallH > 0 && mode !== 'credit' ? (
               <div className="flex items-center justify-between rounded-md border border-warning-100 bg-warning-50 px-3 py-2.5">

@@ -1,4 +1,4 @@
-import { Minus, Plus, ShoppingCart, Trash2, X } from 'lucide-react';
+import { ListRestart, Minus, PauseCircle, Plus, ShoppingCart, Trash2, X } from 'lucide-react';
 import { Button, CurrencyDisplay } from '@/components/ui';
 import { DiscountPicker } from './DiscountPicker';
 import { cn } from '@/lib/cn';
@@ -21,6 +21,11 @@ export interface CartPanelProps {
   discountCapped: boolean;
   /** True when an approval is outstanding, so checkout must wait. */
   checkoutBlocked: boolean;
+  /** Park this cart and start a new one. */
+  onHold?: () => void;
+  /** How many carts are parked, and how to see them. */
+  heldCount?: number;
+  onShowHeld?: () => void;
 }
 
 export function CartPanel({
@@ -33,6 +38,9 @@ export function CartPanel({
   onRequestApproval,
   discountCapped,
   checkoutBlocked,
+  onHold,
+  heldCount = 0,
+  onShowHeld,
 }: CartPanelProps) {
   const { t } = useTranslation();
   const { language } = useI18n();
@@ -55,11 +63,34 @@ export function CartPanel({
           )}
         </div>
 
-        {!cart.isEmpty && (
-          <Button variant="ghost" size="sm" onClick={cart.clear} leadingIcon={<Trash2 />}>
-            {t('pos.cart.clear')}
-          </Button>
-        )}
+        <div className="flex items-center gap-1">
+          {/* Held orders: parked carts on this device, resumable. */}
+          {onShowHeld && heldCount > 0 && (
+            <Button variant="ghost" size="sm" onClick={onShowHeld} leadingIcon={<ListRestart />}>
+              {t('pos.hold.heldList')}
+              <span className="numeric ms-1 rounded-full bg-brand-50 px-1.5 text-2xs font-semibold text-brand-700">
+                {heldCount}
+              </span>
+            </Button>
+          )}
+
+          {onHold && !cart.isEmpty && (
+            <Button variant="ghost" size="sm" onClick={onHold} leadingIcon={<PauseCircle />}>
+              {t('pos.hold.hold')}
+            </Button>
+          )}
+
+          {!cart.isEmpty && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={cart.clear}
+              leadingIcon={<Trash2 />}
+              aria-label={t('pos.cart.clear')}
+              title={t('pos.cart.clear')}
+            />
+          )}
+        </div>
       </header>
 
       {/* Lines */}
@@ -169,11 +200,13 @@ export function CartPanel({
             </dd>
           </div>
 
+          {/* Subtotal and discount are both VAT exclusive, so subtotal −
+              discount + VAT is the charge on the button, as on the receipt. */}
           {totals.discountH > 0 && (
             <div className="flex items-center justify-between">
               <dt className="text-ink-500">{t('pos.cart.discount')}</dt>
               <dd>
-                <CurrencyDisplay amount={-totals.discountH} className="text-danger-600" />
+                <CurrencyDisplay amount={-totals.discountExH} className="text-danger-600" />
               </dd>
             </div>
           )}

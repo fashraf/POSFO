@@ -1,5 +1,5 @@
 import { customerApi, salesApi } from './api';
-import type { CreditNoteRow } from './api/salesApi';
+import type { AnalyticsPeriod, CreditNoteRow } from './api/salesApi';
 import { invalidate } from './dataVersion';
 import { num, str, toCustomer, toSale } from './mappers/saleMappers';
 import type { ListQuery, Paginated } from '@/types';
@@ -14,6 +14,8 @@ import type {
   Sale,
   SaleLine,
   SalePayment,
+  SalePaymentKind,
+  SaleStatus,
 } from '@/types/sales';
 import { buildStatement } from '@/types/sales';
 import type { OrderType } from '@/types/kitchen';
@@ -55,24 +57,52 @@ export interface CommitSaleInput {
   /** How the order is served; shown on the kitchen board. */
   orderType?: OrderType | null;
   /**
+   * Only for a deliberate price or discount override (see salesApi.commit);
+   * the till's normal path never sends one.
+   */
+  overrideReason?: string | null;
+  /**
    * The signed-in user's display name. The server records the cashier from the
    * token; this only fills the receipt if the stored name comes back empty.
    */
   cashierName?: string;
+  /**
+   * One key per sale, from newSaleKey(), kept by the caller across retries.
+   * A retry with the same key gets the original sale back instead of a
+   * second invoice — which is what a lost response followed by "try again"
+   * needs. Omitted, each call is treated as a new sale.
+   */
+  idempotencyKey?: string;
+}
+
+/** Totals over a filtered sales list, all pages. */
+export interface SalesListSummary {
+  /** Total of the sales that are not voided, less what their credit notes refunded. */
+  netH: number;
+  /** What credit notes against these sales refunded (VAT inclusive). */
+  returnsH: number;
+  /** How many are not voided. */
+  invoices: number;
+  /** How many are returned or partially returned. */
+  returned: number;
+}
+
+/** A fresh idempotency key for one sale. */
+export function newSaleKey(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `sal-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  );
 }
 
 export const salesService = {
   async commit(input: CommitSaleInput): Promise<Sale> {
     /*
-     * One key for this attempt, generated before the first call.
-     *
-     * If the request times out, the retry below sends the SAME key and the
-     * server returns the original sale rather than creating a second one.
-     * Generating it per call would defeat the purpose entirely.
+     * The key belongs to the sale, not to the call: the till keeps it across
+     * attempts. Generating one here on every call made each retry a new sale,
+     * so a timed-out commit that had in fact succeeded was recorded twice.
      */
-    const idempotencyKey =
-      globalThis.crypto?.randomUUID?.() ??
-      `sal-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const idempotencyKey = input.idempotencyKey ?? newSaleKey();
 
     const result = await salesApi.commit({
       idempotencyKey,
@@ -85,6 +115,7 @@ export const salesService = {
       approvedByUserId: input.approvedByUserId ?? null,
       approverPassword: input.approverPassword ?? null,
       orderType: input.orderType ?? null,
+      overrideReason: input.overrideReason ?? null,
       lines: input.lines.map((line) => ({
         itemId: line.itemId,
         quantity: line.quantity,
@@ -129,10 +160,21 @@ export const salesService = {
     );
   },
 
-  async list(query?: ListQuery & { branchId?: string | null }): Promise<Paginated<Sale>> {
+  async list(
+    query?: ListQuery & {
+      branchId?: string | null;
+      status?: SaleStatus | null;
+      method?: SalePaymentKind | null;
+    },
+  ): Promise<Paginated<Sale> & { summary: SalesListSummary }> {
+    /* Status and method are filtered by the server, so the pages and the
+       count are of the filtered set — narrowing one loaded page here showed
+       3 of 9 voided sales. */
     const page = await salesApi.list({
       branchId: query?.branchId ?? undefined,
       search: query?.search,
+      status: query?.status ?? undefined,
+      method: query?.method ?? undefined,
       page: query?.page ?? 1,
       pageSize: query?.pageSize ?? 25,
     });
@@ -144,7 +186,13 @@ export const salesService = {
       page: page.page,
       pageSize: page.pageSize,
       total: page.totalCount,
-    } as Paginated<Sale>;
+      summary: {
+        netH: num(page.summary?.netH),
+        returnsH: num(page.summary?.returnsH),
+        invoices: num(page.summary?.invoices),
+        returned: num(page.summary?.returned),
+      },
+    } as Paginated<Sale> & { summary: SalesListSummary };
   },
 
   async get(id: string): Promise<Sale> {
@@ -186,12 +234,8 @@ export const salesService = {
    * Aggregates for the dashboard over a rolling window, with the equivalent
    * figure for the preceding window so a trend can be shown honestly.
    */
-  async analytics(days: number, branchId?: string | null): Promise<{
-    salesH: number;
-    transactions: number;
-    averageH: number;
-    grossProfitH: number;
-    previous: { salesH: number; transactions: number; averageH: number; grossProfitH: number };
+  async analytics(days: number, branchId?: string | null): Promise<AnalyticsPeriod & {
+    previous: AnalyticsPeriod;
     daily: { date: string; salesH: number }[];
     byMethod: { method: string; amountH: number }[];
     topItems: { itemId: string; nameAr: string; nameEn: string; quantity: number; revenueH: number }[];
@@ -201,17 +245,21 @@ export const salesService = {
     /* Aggregated in SQL, so this only renames. Every figure goes through
        num(), because a period with no sales returns nulls the arithmetic
        downstream would turn into NaN. */
+    const period = (p: AnalyticsPeriod): AnalyticsPeriod => ({
+      salesH: num(p.salesH),
+      grossSalesH: num(p.grossSalesH),
+      returnsH: num(p.returnsH),
+      transactions: num(p.transactions),
+      averageH: num(p.averageH),
+      netRevenueH: num(p.netRevenueH),
+      cogsH: num(p.cogsH),
+      grossProfitH: num(p.grossProfitH),
+      grossMargin: p.grossMargin === null || p.grossMargin === undefined ? null : Number(p.grossMargin),
+    });
+
     return {
-      salesH: num(a.current.salesH),
-      transactions: num(a.current.transactions),
-      averageH: num(a.current.averageH),
-      grossProfitH: num(a.current.grossProfitH),
-      previous: {
-        salesH: num(a.previous.salesH),
-        transactions: num(a.previous.transactions),
-        averageH: num(a.previous.averageH),
-        grossProfitH: num(a.previous.grossProfitH),
-      },
+      ...period(a.current),
+      previous: period(a.previous),
       daily: a.daily.map((d) => ({
         date: String(d.date).slice(0, 10),
         salesH: num(d.salesH),
@@ -357,6 +405,8 @@ export interface CustomerInput {
   creditLimitH: number;
   /** Balance the customer already owed before joining the system. */
   openingBalanceH: number;
+  /** Branch the opening entry is booked to; null for the whole business. */
+  branchId?: string | null;
 }
 
 export interface RecordPaymentInput {
@@ -372,7 +422,11 @@ const STATEMENT_KINDS: Record<string, StatementEntryKind> = {
   credit_sale: 'credit_sale',
   collection: 'payment',
   payment: 'payment',
+  collection_reversed: 'payment_reversed',
   credit_note: 'credit_note',
+  opening_balance: 'opening_balance',
+  opening_reversed: 'opening_reversed',
+  balance_forward: 'balance_forward',
 };
 
 export const customerService = {
@@ -388,9 +442,9 @@ export const customerService = {
   },
 
   async create(input: CustomerInput): Promise<Customer> {
-    /* The server validates names and uniqueness and answers per field. An
-       opening balance is not sent: there is no route that posts one, and a
-       balance with no ledger entry behind it would not reconcile. */
+    /* The server validates names, limits and the opening balance and answers
+       per field. An opening balance is posted to the ledger (receivables
+       against opening equity) and opens the customer's statement. */
     const created = await customerApi.create({
       nameAr: input.nameAr.trim(),
       nameEn: input.nameEn.trim(),
@@ -399,9 +453,13 @@ export const customerService = {
       vatNumber: null,
       customerType: 'individual',
       creditLimitH: input.creditLimitH,
+      openingBalanceH: Math.max(0, input.openingBalanceH || 0),
+      branchId: input.branchId ?? null,
     });
 
-    invalidate('customers');
+    /* An opening balance also posted a journal entry. */
+    if (input.openingBalanceH > 0) invalidate('customers', 'ledger');
+    else invalidate('customers');
 
     return customerService.get(created.customerId);
   },
@@ -470,8 +528,11 @@ export const customerService = {
   async statement(id: string): Promise<StatementEntry[]> {
     const rows = await customerApi.statement(id);
 
-    /* The route returns entries signed from the customer's side already —
-       positive owed, negative paid — so the running balance is a plain sum. */
+    /* The route returns entries in order, signed from the customer's side —
+       positive owed, negative paid — starting with whatever was owed before
+       them, so the running balance is a plain sum ending on the customer's
+       balance. buildStatement's sort is stable, so same-moment entries keep
+       the server's order. */
     return buildStatement(
       rows.map((row) => ({
         id: str(row.id ?? row.Id),

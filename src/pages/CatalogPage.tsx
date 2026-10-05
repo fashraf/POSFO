@@ -15,6 +15,7 @@ import { CatalogItemForm } from '@/features/catalog/CatalogItemForm';
 import { CatalogTable } from '@/features/catalog/CatalogTable';
 import { CategoriesPanel } from '@/features/catalog/CategoriesPanel';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
+import { useSearchParamSeed } from '@/hooks/useSearchParamSeed';
 import { useDisclosure } from '@/hooks/useDisclosure';
 import { useSession } from '@/contexts/SessionContext';
 import { useToast } from '@/contexts/ToastContext';
@@ -80,6 +81,11 @@ export default function CatalogPage() {
   /* ---- query state ---- */
   const [tab, setTab] = useState<TabValue>('all');
   const [search, setSearch] = useState('');
+  /* The header search opens this page with ?q=<SKU or name>, on the All tab. */
+  useSearchParamSeed((value) => {
+    setTab('all');
+    setSearch(value);
+  });
   const [categoryId, setCategoryId] = useState('all');
   const [status, setStatus] = useState<RecordStatus | 'all'>('all');
   const [page, setPage] = useState(1);
@@ -262,6 +268,22 @@ export default function CatalogPage() {
     [categories, language, t],
   );
 
+  /**
+   * A refused category save: a named field (duplicate or missing name) goes
+   * beside its input in the user's language; anything else is a toast.
+   */
+  function categoryFailure(error: {
+    message: string;
+    fieldErrors?: Record<string, string[]>;
+  }): { fieldErrors?: Record<string, string> } {
+    const fields = Object.keys(error.fieldErrors ?? {});
+    if (fields.length > 0) {
+      return { fieldErrors: Object.fromEntries(fields.map((field) => [field, error.message])) };
+    }
+    toast.error(t('catalog.toast.saveFailed'), error.message);
+    return {};
+  }
+
   const lowStockTotal = (summary?.lowStock ?? 0) + (summary?.outOfStock ?? 0);
 
   return (
@@ -330,16 +352,55 @@ export default function CatalogPage() {
           <CategoriesPanel
             categories={categories}
             usage={usage}
-            onCreate={async (input) => {
-              const result = await safeCall(() => categoryService.create(input));
-              if (result.ok) {
-                toast.success(t('catalog.toast.categoryCreated'));
-                await loadReference();
-                return true;
-              }
-              toast.error(t('catalog.toast.saveFailed'), result.error.message);
-              return false;
-            }}
+            onCreate={
+              canCreate
+                ? async (input) => {
+                    const result = await safeCall(() => categoryService.create(input));
+                    if (result.ok) {
+                      toast.success(t('catalog.toast.categoryCreated'));
+                      await loadReference();
+                      return true;
+                    }
+                    return categoryFailure(result.error);
+                  }
+                : undefined
+            }
+            onUpdate={
+              canEdit
+                ? async (category, input) => {
+                    const result = await safeCall(() => categoryService.update(category.id, input));
+                    if (result.ok) {
+                      toast.success(t('catalog.toast.categoryUpdated'));
+                      await loadReference();
+                      return true;
+                    }
+                    return categoryFailure(result.error);
+                  }
+                : undefined
+            }
+            onToggleStatus={
+              canToggle
+                ? async (category) => {
+                    const activating = category.status !== 'active';
+                    const result = await safeCall(() =>
+                      categoryService.setActive(category.id, activating),
+                    );
+                    if (result.ok) {
+                      toast.success(
+                        activating
+                          ? t('catalog.toast.categoryActivated')
+                          : t('catalog.toast.categoryDeactivated'),
+                      );
+                      await loadReference();
+                    } else if (result.error.cause instanceof DeactivationBlocked) {
+                      /* The server's sentence names how many live items are in the way. */
+                      toast.warning(t('catalog.toast.cannotDeactivate'), result.error.message);
+                    } else {
+                      toast.error(t('catalog.toast.saveFailed'), result.error.message);
+                    }
+                  }
+                : undefined
+            }
           />
         </div>
       ) : (

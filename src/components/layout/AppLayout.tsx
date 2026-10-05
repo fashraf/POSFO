@@ -36,7 +36,11 @@ export function AppLayout() {
       <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
         <Header onOpenMobileNav={mobileNav.open} />
 
-        <main id="main-content" className="min-h-0 flex-1 px-3 py-3 sm:px-4 sm:py-4">
+        {/* Grows with the page and never shrinks below it. With min-h-0 a long
+            page squeezed main to the space left over, its content spilled past
+            the end, and the sticky mobile nav — laid out after main — sat on
+            top of the last rows (the receivables Collect button among them). */}
+        <main id="main-content" className="flex-1 shrink-0 px-3 py-3 sm:px-4 sm:py-4">
           <div className="mx-auto h-full w-full max-w-[1600px]">
             <Outlet />
           </div>

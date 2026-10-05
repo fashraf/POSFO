@@ -38,9 +38,10 @@ import {
 import { useSession } from '@/contexts/SessionContext';
 import { useI18n, useTranslation } from '@/i18n';
 import { cn } from '@/lib/cn';
-import { formatCurrency, formatDate, formatNumber } from '@/lib/format';
+import { formatCurrency, formatDate, formatNumber, formatPercent } from '@/lib/format';
 import { ROUTES } from '@/routes/paths';
 import { catalogService, customerService, safeCall, salesService } from '@/services';
+import type { AnalyticsPeriod } from '@/services/api/salesApi';
 import type { Product } from '@/types/catalog';
 import type { Sale } from '@/types/sales';
 
@@ -54,12 +55,9 @@ const METHOD_COLOURS: Record<string, string> = {
   credit: '#B26A00',
 };
 
-interface Analytics {
-  salesH: number;
-  transactions: number;
-  averageH: number;
-  grossProfitH: number;
-  previous: { salesH: number; transactions: number; averageH: number; grossProfitH: number };
+/* Every figure is net of returns; gross profit follows the P&L's rule. */
+interface Analytics extends AnalyticsPeriod {
+  previous: AnalyticsPeriod;
   daily: { date: string; salesH: number }[];
   byMethod: { method: string; amountH: number }[];
   topItems: { itemId: string; nameAr: string; nameEn: string; quantity: number; revenueH: number }[];
@@ -244,7 +242,16 @@ export default function DashboardPage() {
               <InfoHint content={t('dashboard.kpi.grossProfitHelp')} />
             </span>
           }
-          value={<CurrencyDisplay amount={analytics?.grossProfitH ?? 0} />}
+          value={
+            <span className="flex items-baseline gap-2">
+              <CurrencyDisplay amount={analytics?.grossProfitH ?? 0} />
+              {analytics?.grossMargin != null && (
+                <span className="numeric text-sm font-normal text-ink-500">
+                  {formatPercent(analytics.grossMargin, { language })}
+                </span>
+              )}
+            </span>
+          }
           change={changeRatio(analytics?.grossProfitH ?? 0, analytics?.previous.grossProfitH ?? 0)}
           changeLabel={t('dashboard.kpi.vsPrevious')}
           icon={<TrendingUp />}
@@ -383,7 +390,7 @@ export default function DashboardPage() {
                         </p>
                         <p className="text-xs text-ink-400">
                           {formatDate(sale.soldAt, { language, withTime: true })} ·{' '}
-                          {t(`pos.payment.${sale.payments[0]?.method ?? 'cash'}`)}
+                          {t(`pos.payment.${sale.paymentMethod ?? 'unknown'}`)}
                         </p>
                       </div>
 

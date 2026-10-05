@@ -75,8 +75,11 @@ export function KitchenOrderModal({
 
   return (
     <>
+      {/* Stepped aside while a confirmation is up, as the checkout does: two
+          dialogs on the same layer left it to stacking order and focus which
+          one took the tap, and the confirmation could end up behind. */}
       <Modal
-        open={open}
+        open={open && !pendingStatus && !confirmingAll}
         onClose={onClose}
         size="md"
         title={t('kitchenModal.title', { order: order.orderNumber })}

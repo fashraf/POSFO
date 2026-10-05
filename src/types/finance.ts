@@ -140,6 +140,8 @@ export type TransactionKind =
   | 'expense'
   | 'expense_recognition'
   | 'customer_collection'
+  /** A customer's opening receivable, posted when they were created. */
+  | 'customer_opening'
   | 'supplier_payment'
   | 'purchase'
   | 'card_settlement'
@@ -369,6 +371,10 @@ export interface DrawerSession extends Timestamped {
   openingCashH: number;
   /** Counted at close. Null while the session is open. */
   countedCashH: number | null;
+  /** What the ledger said should be there, frozen at close. Null while open. */
+  expectedCashH: number | null;
+  /** Counted minus expected: positive is over, negative is short. Null while open. */
+  varianceH: number | null;
   openedBy: string;
   closedBy: string | null;
   note: string;

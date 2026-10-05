@@ -4,7 +4,23 @@ import type { CatalogItemKind } from './catalog';
 /** Saudi standard rate. Lives here until settings are configurable. */
 export const VAT_RATE = 0.15;
 
-export type PaymentMethod = 'cash' | 'card' | 'credit';
+export type PaymentMethod = 'cash' | 'card' | 'credit' | 'bank';
+
+/**
+ * How a sale was paid, as one word: the single method used, or `mixed` when
+ * more than one was. Null when the sale has no payment rows (nothing to
+ * show) — never defaulted to cash, which is how card and credit sales came
+ * to read as cash.
+ */
+export type SalePaymentKind = PaymentMethod | 'mixed';
+
+/** The method word for a set of payments. */
+export function paymentKindOf(payments: SalePayment[]): SalePaymentKind | null {
+  const methods = new Set(payments.filter((p) => p.amountH > 0).map((p) => p.method));
+  if (methods.size === 0) return null;
+  if (methods.size > 1) return 'mixed';
+  return [...methods][0];
+}
 
 export type SaleStatus = 'completed' | 'returned' | 'partially_returned' | 'voided';
 
@@ -50,13 +66,25 @@ export interface Sale extends Timestamped {
   invoiceNumber: string;
   lines: SaleLine[];
   payments: SalePayment[];
+  /**
+   * How it was paid. On list rows this comes from the server (which has the
+   * payments the row does not carry); on a full sale it matches `payments`.
+   */
+  paymentMethod: SalePaymentKind | null;
+  /** Units sold. List rows carry this without their lines. */
+  itemCount: number;
   customerId: ID | null;
   cashierName: string;
-  /** Invoice-level discount in halalas. */
+  /**
+   * The stored figures share one basis (server migration 004):
+   * subtotalH − discountH + taxH = totalH.
+   */
+  /** Invoice-level discount, VAT exclusive, in halalas. */
   discountH: number;
-  /** Net of VAT. */
+  /** Basket VAT exclusive, after line discounts and before the invoice discount. */
   subtotalH: number;
   taxH: number;
+  /** What the customer paid, VAT inclusive. */
   totalH: number;
   /** Cash handed over, for the change calculation. Null for non-cash sales. */
   tenderedH: number | null;
@@ -100,11 +128,18 @@ export function lineGrossH(line: SaleLine): number {
 }
 
 export interface CartTotals {
-  /** Sum of line gross before the invoice-level discount. */
+  /** Sum of line gross (VAT inclusive) before the invoice-level discount. */
   grossH: number;
+  /**
+   * The invoice discount as the rule gives it, VAT inclusive. This is what
+   * is sent to the server, and what discount rules and approval limits are
+   * written in.
+   */
   discountH: number;
-  /** Net of VAT, after discount. */
+  /** The basket VAT exclusive, before the invoice discount. */
   subtotalH: number;
+  /** The invoice discount VAT exclusive — the receipt's discount line. */
+  discountExH: number;
   taxH: number;
   totalH: number;
   itemCount: number;
@@ -124,10 +159,19 @@ export function computeTotals(lines: SaleLine[], invoiceDiscountH = 0): CartTota
   const totalH = grossH - discountH;
   const taxH = taxFromGross(totalH);
 
+  /* One basis, as the server stores it: the subtotal and the discount are
+     both VAT exclusive, and the discount is whatever closes
+     subtotal − discount + VAT = total, so the lines always add up. Mixing an
+     ex-VAT subtotal with the VAT-inclusive discount showed 75.02 where
+     73.91 was right. */
+  const subtotalH = grossH - taxFromGross(grossH);
+  const discountExH = subtotalH - (totalH - taxH);
+
   return {
     grossH,
     discountH,
-    subtotalH: totalH - taxH,
+    subtotalH,
+    discountExH,
     taxH,
     totalH,
     itemCount: lines.reduce((sum, line) => sum + line.quantity, 0),
@@ -231,7 +275,17 @@ export interface CustomerPayment extends Timestamped {
   receivedAt: string;
 }
 
-export type StatementEntryKind = 'credit_sale' | 'payment' | 'credit_note';
+export type StatementEntryKind =
+  | 'credit_sale'
+  | 'payment'
+  /** A payment that was reversed in the ledger: puts the amount back. */
+  | 'payment_reversed'
+  | 'credit_note'
+  /** An opening receivable posted when the customer was created. */
+  | 'opening_balance'
+  | 'opening_reversed'
+  /** Owed before any recorded movement (seeded or imported balances). */
+  | 'balance_forward';
 
 /**
  * One line of a customer statement.
