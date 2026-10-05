@@ -120,7 +120,8 @@ export default function FinanceOverviewPage() {
       const summary = summaries.find((candidate) => candidate.month === month);
       const salesH = summary?.revenueH ?? 0;
       const expensesH = summary?.expensesH ?? 0;
-      return { salesH, expensesH, netH: salesH - expensesH - (summary?.cogsH ?? 0) };
+      const grossProfitH = summary?.grossProfitH ?? salesH - (summary?.cogsH ?? 0);
+      return { salesH, expensesH, netH: grossProfitH - expensesH };
     };
 
     const current = forMonth(thisMonth);
@@ -145,12 +146,16 @@ export default function FinanceOverviewPage() {
       const summary = summaries.find((candidate) => candidate.month === month);
       const salesH = summary?.revenueH ?? 0;
       const expensesH = summary?.expensesH ?? 0;
+      /* Net is gross profit (the shared rule: net revenue less the cost of
+         goods and services sold) less operating expenses — the same figure
+         as the headline card and the P&L. */
+      const grossProfitH = summary?.grossProfitH ?? salesH - (summary?.cogsH ?? 0);
 
       return {
         label: month.slice(5),
         revenue: salesH / 100,
         expenses: expensesH / 100,
-        net: (salesH - expensesH) / 100,
+        net: (grossProfitH - expensesH) / 100,
       };
     });
   }, [summaries, range]);

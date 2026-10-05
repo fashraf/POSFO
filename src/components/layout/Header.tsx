@@ -5,7 +5,7 @@ import { Avatar } from '@/components/ui/Avatar';
 import { cn } from '@/lib/cn';
 import { Dropdown } from '@/components/ui/Dropdown';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
-import { SearchInput } from '@/components/ui/SearchInput';
+import { GlobalSearch } from '@/components/shell/GlobalSearch';
 import { useTranslation } from '@/i18n';
 import { LanguageSwitcher } from './LanguageSwitcher';
 import { NotificationBell } from '@/components/shell/NotificationBell';
@@ -120,7 +120,7 @@ export function Header({ onOpenMobileNav }: HeaderProps) {
       )}
 
       <div className="hidden min-w-0 flex-1 md:block">
-        <SearchInput className="max-w-xs" aria-label={t('common.search')} />
+        <GlobalSearch className="max-w-xs" />
       </div>
 
       <div className="flex flex-1 items-center justify-end gap-1 md:flex-none">

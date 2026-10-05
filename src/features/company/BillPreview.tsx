@@ -3,7 +3,8 @@ import { cn } from '@/lib/cn';
 import { useTranslation } from '@/i18n';
 import { PAPER_WIDTHS } from '@/types/company';
 import type { BillTemplate, CompanyProfile } from '@/types/company';
-import { VAT_RATE, taxFromGross } from '@/types/sales';
+import { VAT_RATE, computeTotals, type SaleLine } from '@/types/sales';
+import { SIMPLIFIED_TAX_INVOICE_TITLE, withTaxInvoiceFields } from '@/types/printing';
 
 /** A representative basket, so the preview shows a real-looking receipt. */
 const SAMPLE_LINES = [
@@ -35,8 +36,13 @@ export interface BillPreviewProps {
  * the thing a merchant actually needs to judge is whether their shop name fits
  * on 58mm paper — which a nicely-typeset web preview would hide from them.
  */
-export function BillPreview({ template, company, className }: BillPreviewProps) {
+export function BillPreview({ template: stored, company, className }: BillPreviewProps) {
   const { t } = useTranslation();
+
+  /* What prints, not just what is stored: a customer receipt always carries
+     the tax-invoice fields, whatever an older saved template says. */
+  const template = withTaxInvoiceFields(stored);
+  const isTaxInvoice = template.audience === 'customer';
 
   const showAr = template.language === 'ar' || template.language === 'both';
   const showEn = template.language === 'en' || template.language === 'both';
@@ -46,10 +52,24 @@ export function BillPreview({ template, company, className }: BillPreviewProps) 
 
   const money = (halalas: number) => (halalas / 100).toFixed(2);
 
-  const grossH = SAMPLE_LINES.reduce((sum, line) => sum + line.unitH * line.qty, 0);
-  const afterDiscountH = grossH - (template.showDiscount ? SAMPLE_DISCOUNT_H : 0);
-  const taxH = taxFromGross(afterDiscountH);
-  const subtotalH = afterDiscountH - taxH;
+  /* The till's basis (computeTotals): subtotal and discount both VAT
+     exclusive, subtotal − discount + VAT = total. */
+  const totals = computeTotals(
+    SAMPLE_LINES.map((line, index) => ({
+      id: `sample-${index}`,
+      itemId: line.sku,
+      nameAr: line.nameAr,
+      nameEn: line.nameEn,
+      unitPriceH: line.unitH,
+      quantity: line.qty,
+      discountH: 0,
+    })) as unknown as SaleLine[],
+    template.showDiscount ? SAMPLE_DISCOUNT_H : 0,
+  );
+  const afterDiscountH = totals.totalH;
+  const taxH = totals.taxH;
+  const subtotalH = totals.subtotalH;
+  const discountExH = totals.discountExH;
 
   const columns = [
     template.showItemName,
@@ -125,6 +145,16 @@ export function BillPreview({ template, company, className }: BillPreviewProps) 
 
         <hr className="my-2 border-0 border-t border-dashed border-current opacity-30" />
 
+        {/* The document's title. A customer receipt is a simplified tax
+            invoice (ZATCA) and must say so; it follows the template's language,
+            Arabic first on a bilingual bill. Group tickets carry no such title. */}
+        {isTaxInvoice && (
+          <div className="mb-1 text-center font-bold">
+            {showAr && <p className="text-[14px]">{SIMPLIFIED_TAX_INVOICE_TITLE.ar}</p>}
+            {showEn && <p className="text-[13px]">{SIMPLIFIED_TAX_INVOICE_TITLE.en}</p>}
+          </div>
+        )}
+
         {/* Invoice meta */}
         <div className="flex justify-between text-[12px] opacity-70">
           <span className="numeric">INV-1042</span>
@@ -197,7 +227,7 @@ export function BillPreview({ template, company, className }: BillPreviewProps) 
           {template.showDiscount && (
             <div className="flex justify-between">
               <dt>{t('bill.preview.discount')}</dt>
-              <dd className="numeric">-{money(SAMPLE_DISCOUNT_H)}</dd>
+              <dd className="numeric">-{money(discountExH)}</dd>
             </div>
           )}
           {template.showVat && (

@@ -202,7 +202,18 @@ export function SaleDetail({
             <div>
               <dt className="text-ink-500">{t('sales.detail.paidWith')}</dt>
               <dd className="font-medium text-ink-900">
-                {t(`pos.payment.${sale.payments[0]?.method ?? 'cash'}`)}
+                {t(`pos.payment.${sale.paymentMethod ?? 'unknown'}`)}
+                {/* A split payment names each part, cash as handed over. */}
+                {sale.payments.length > 1 && (
+                  <span className="mt-0.5 block text-xs font-normal text-ink-500">
+                    {sale.payments.map((payment, index) => (
+                      <span key={`${payment.method}-${index}`} className="me-2 inline-block">
+                        {t(`pos.payment.${payment.method}`)}{' '}
+                        <CurrencyDisplay amount={payment.amountH} />
+                      </span>
+                    ))}
+                  </span>
+                )}
               </dd>
             </div>
           </dl>

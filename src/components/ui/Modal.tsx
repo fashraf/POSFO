@@ -51,22 +51,37 @@ export function Modal({
 
   useLockBodyScroll(open);
 
+  /* The latest onClose, read when Escape is pressed. Callers usually pass an
+     inline function, new on every render; with it in the effect below, any
+     parent re-render (a ticking clock, a keystroke) re-ran the effect and
+     moved focus back to the panel — out of the field being typed in, and
+     away from a dialog opened on top. */
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const dismissibleRef = useRef(dismissible);
+  dismissibleRef.current = dismissible;
+
   useEffect(() => {
     if (!open) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && dismissible) onClose();
+      if (event.key === 'Escape' && dismissibleRef.current) onCloseRef.current();
     };
 
     document.addEventListener('keydown', onKeyDown);
-    /* Move focus into the dialog so the keyboard path starts inside it. */
-    const timer = window.setTimeout(() => panelRef.current?.focus(), 0);
+    /* Move focus into the dialog once, when it opens, so the keyboard path
+       starts inside it. */
+    const timer = window.setTimeout(() => {
+      const panel = panelRef.current;
+      /* A field that took focus itself (autoFocus) keeps it. */
+      if (panel && !panel.contains(document.activeElement)) panel.focus();
+    }, 0);
 
     return () => {
       document.removeEventListener('keydown', onKeyDown);
       window.clearTimeout(timer);
     };
-  }, [open, dismissible, onClose]);
+  }, [open]);
 
   if (!open) return null;
 

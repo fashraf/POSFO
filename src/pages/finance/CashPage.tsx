@@ -244,10 +244,12 @@ export default function CashPage() {
           <Table>
             <TableHead>
               <TableRow>
-                <TableHeaderCell>{t('cash.title')}</TableHeaderCell>
+                <TableHeaderCell>{t('cash.closedAt')}</TableHeaderCell>
                 <TableHeaderCell numeric>{t('cash.openingFloat')}</TableHeaderCell>
+                <TableHeaderCell numeric>{t('cash.expected')}</TableHeaderCell>
                 <TableHeaderCell numeric>{t('cash.counted')}</TableHeaderCell>
-                <TableHeaderCell>{t('cash.variance')}</TableHeaderCell>
+                <TableHeaderCell numeric>{t('cash.variance')}</TableHeaderCell>
+                <TableHeaderCell>{t('cash.note')}</TableHeaderCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -261,7 +263,32 @@ export default function CashPage() {
                     <CurrencyDisplay amount={entry.openingCashH} className="text-ink-700" />
                   </TableCell>
                   <TableCell numeric>
+                    {entry.expectedCashH === null ? (
+                      <span className="text-ink-400">—</span>
+                    ) : (
+                      <CurrencyDisplay amount={entry.expectedCashH} className="text-ink-700" />
+                    )}
+                  </TableCell>
+                  <TableCell numeric>
                     <CurrencyDisplay amount={entry.countedCashH ?? 0} className="text-ink-900" />
+                  </TableCell>
+                  {/* Counted minus expected, signed: over is positive, short negative. */}
+                  <TableCell numeric>
+                    {entry.varianceH === null ? (
+                      <span className="text-ink-400">—</span>
+                    ) : (
+                      <CurrencyDisplay
+                        amount={entry.varianceH}
+                        className={cn(
+                          'font-medium',
+                          entry.varianceH === 0
+                            ? 'text-ink-600'
+                            : entry.varianceH > 0
+                              ? 'text-warning-700'
+                              : 'text-danger-600',
+                        )}
+                      />
+                    )}
                   </TableCell>
                   <TableCell>
                     <span className="text-xs text-ink-500">{entry.note || '—'}</span>

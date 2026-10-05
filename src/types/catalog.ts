@@ -83,11 +83,22 @@ export function stockLevelOf(item: CatalogItem): StockLevel {
   return 'in_stock';
 }
 
-/** Gross margin as a ratio, or null when there is no cost to compare against. */
-export function marginOf(item: CatalogItem): number | null {
-  if (item.priceH <= 0) return null;
-  if (item.costH <= 0) return null;
-  return (item.priceH - item.costH) / item.priceH;
+/**
+ * Gross margin as a ratio, or null when there is no cost to compare against.
+ *
+ * Shelf prices include VAT, and the VAT is the government's, not revenue. The
+ * margin is therefore on the price excluding VAT — the same rule as the P&L
+ * and dashboard: (net price − cost) ÷ net price.
+ */
+export function grossMarginOf(priceH: number, costH: number, vatRatePercent = 15): number | null {
+  if (priceH <= 0) return null;
+  if (costH <= 0) return null;
+  const netPriceH = (priceH * 100) / (100 + vatRatePercent);
+  return (netPriceH - costH) / netPriceH;
+}
+
+export function marginOf(item: CatalogItem, vatRatePercent = 15): number | null {
+  return grossMarginOf(item.priceH, item.costH, vatRatePercent);
 }
 
 export interface Category extends Timestamped {

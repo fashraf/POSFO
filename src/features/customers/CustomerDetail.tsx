@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowDownLeft, ArrowUpRight, HandCoins, RotateCcw, Wallet } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, BookOpen, HandCoins, History, RotateCcw, Undo2, Wallet } from 'lucide-react';
 import {
   Alert,
   Button,
@@ -23,7 +23,11 @@ import type { Customer, StatementEntry, StatementEntryKind } from '@/types/sales
 const ENTRY_ICONS: Record<StatementEntryKind, typeof ArrowUpRight> = {
   credit_sale: ArrowUpRight,
   payment: ArrowDownLeft,
+  payment_reversed: Undo2,
   credit_note: RotateCcw,
+  opening_balance: BookOpen,
+  opening_reversed: Undo2,
+  balance_forward: History,
 };
 
 /** Utilisation drives the bar colour: green, amber near the ceiling, red past it. */
@@ -222,7 +226,7 @@ export function CustomerDetail({
 
                       <div className="min-w-0 flex-1">
                         <p className="numeric truncate text-base font-medium text-ink-900">
-                          {entry.reference}
+                          {entry.reference || t(`customers.detail.entryKind.${entry.kind}`)}
                         </p>
                         <p className="text-xs text-ink-400">
                           {formatDate(entry.date, { language, withTime: true })}

@@ -1,5 +1,6 @@
 import {
   Boxes,
+  ClipboardCheck,
   ChefHat,
   Building2,
   Contact,
@@ -37,6 +38,11 @@ export interface NavItem {
    * maintained as a second list that drifts out of step.
    */
   module: PermissionModule;
+  /**
+   * A specific permission that gates the entry instead of `<module>.view`,
+   * for a screen that is a single action within a module (stocktake).
+   */
+  permission?: PermissionKey;
 }
 
 export interface NavSection {
@@ -65,6 +71,14 @@ export const NAVIGATION: NavSection[] = [
     items: [
       { id: 'catalog', to: ROUTES.catalog, labelKey: 'nav.catalog', icon: Package, module: 'products' },
       { id: 'inventory', to: ROUTES.inventory, labelKey: 'nav.inventory', icon: Boxes, module: 'inventory' },
+      {
+        id: 'stocktake',
+        to: ROUTES.stocktake,
+        labelKey: 'stocktake.nav',
+        icon: ClipboardCheck,
+        module: 'inventory',
+        permission: 'inventory.stocktake',
+      },
       { id: 'kitchen', to: ROUTES.kitchen, labelKey: 'nav.kitchen', icon: ChefHat, module: 'pos' },
       { id: 'vendors', to: ROUTES.vendors, labelKey: 'nav.vendors', icon: Building2, module: 'vendors' },
       { id: 'customers', to: ROUTES.customers, labelKey: 'nav.customers', icon: Contact, module: 'customers' },
@@ -124,6 +138,8 @@ export function visibleNavigation(permissions: PermissionKey[]): NavSection[] {
 
   return NAVIGATION.map((section) => ({
     ...section,
-    items: section.items.filter((item) => held.has(`${item.module}.view` as PermissionKey)),
+    items: section.items.filter((item) =>
+      held.has(item.permission ?? (`${item.module}.view` as PermissionKey)),
+    ),
   })).filter((section) => section.items.length > 0);
 }

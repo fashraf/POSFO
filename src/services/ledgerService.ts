@@ -152,6 +152,10 @@ function toFigures(row: Partial<FinanceFigures>): FinanceFigures {
     revenueH: num(row.revenueH),
     returnsH: num(row.returnsH),
     cogsH: num(row.cogsH),
+    goodsCostH: num(row.goodsCostH),
+    serviceCostH: num(row.serviceCostH),
+    grossProfitH: num(row.grossProfitH),
+    grossMargin: row.grossMargin === null || row.grossMargin === undefined ? null : Number(row.grossMargin),
     expensesH: num(row.expensesH),
     expensesByAccount: (row.expensesByAccount ?? []).map((account) => ({
       accountCode: str(account.accountCode),

@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useBlocker, useNavigate } from 'react-router-dom';
 import { ScanLine } from 'lucide-react';
-import { Input } from '@/components/ui';
+import { ConfirmModal, Input } from '@/components/ui';
 import { CartPanel } from '@/features/pos/CartPanel';
 import { ApprovalModal } from '@/features/pos/ApprovalModal';
 import { CheckoutModal, type CheckoutResult } from '@/features/pos/CheckoutModal';
 import { OrderComplete } from '@/features/pos/OrderComplete';
 import { CategoryScroller } from '@/features/pos/CategoryScroller';
 import { ProductGrid } from '@/features/pos/ProductGrid';
-import { usePosCart } from '@/features/pos/usePosCart';
+import { cartStorageKey, usePosCart } from '@/features/pos/usePosCart';
+import { HeldOrdersModal, heldStorageKey, useHeldOrders } from '@/features/pos/HeldOrders';
 import { useDisclosure } from '@/hooks/useDisclosure';
 import { useToast } from '@/contexts/ToastContext';
 import { useI18n, useTranslation } from '@/i18n';
@@ -35,7 +36,7 @@ import { buildPrintDocuments, groupsInOrder } from '@/types/printing';
 import type { PrintGroup } from '@/types/printing';
 import type { BranchSettings } from '@/types/settings';
 import { NO_APPROVAL, resolveAutomatic } from '@/types/discounts';
-import type { DiscountApproval, DiscountableLine } from '@/types/discounts';
+import type { Discount, DiscountApproval, DiscountableLine } from '@/types/discounts';
 import type { ResolvedDiscount } from '@/services';
 import { useSession } from '@/contexts/SessionContext';
 
@@ -60,7 +61,11 @@ export default function PosPage() {
   /* Who is at the till, for the receipt and any approval they give. */
   const signedInName =
     (language === 'ar' ? user?.nameAr : user?.nameEn) || user?.nameEn || user?.username || '';
-  const cart = usePosCart();
+  /* The cart and the held orders are kept on this device per user and
+     branch, so leaving the page (or a reload) does not lose a sale. */
+  const cart = usePosCart(cartStorageKey(user?.id, activeBranch?.id));
+  const held = useHeldOrders(heldStorageKey(user?.id, activeBranch?.id));
+  const heldList = useDisclosure();
   const payment = useDisclosure();
 
   /*
@@ -90,6 +95,7 @@ export default function PosPage() {
   const [settings, setSettings] = useState<BranchSettings | null>(null);
   const [staff, setStaff] = useState<BranchStaff[]>([]);
   const [completedLines, setCompletedLines] = useState<typeof cart.lines>([]);
+  const [completedDiscount, setCompletedDiscount] = useState<Discount | null>(null);
   const [discounts, setDiscounts] = useState<ResolvedDiscount[]>([]);
   const [approval, setApproval] = useState<DiscountApproval>(NO_APPROVAL);
   const [discountCapped, setDiscountCapped] = useState(false);
@@ -130,6 +136,54 @@ export default function PosPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /* Say so when a cart comes back from storage, so a cashier does not
+     charge a basket they did not ring up. */
+  const restoredNotice = useRef(false);
+  useEffect(() => {
+    if (restoredNotice.current) return;
+    restoredNotice.current = true;
+    if (cart.lines.length > 0) toast.info(t('pos.toast.restored'));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* The catalog is the price list: a restored or resumed cart is brought to
+     today's prices as soon as they are known (the server would refuse the
+     old ones with price_mismatch). */
+  const repriceFromCatalog = useCallback(
+    (catalog: CatalogItem[]) => {
+      const prices = Object.fromEntries(catalog.map((item) => [item.id, item.priceH]));
+      const stale = cart.lines.some(
+        (line) => prices[line.itemId] !== undefined && prices[line.itemId] !== line.unitPriceH,
+      );
+      if (!stale) return false;
+      cart.reprice(prices);
+      return true;
+    },
+    [cart],
+  );
+
+  useEffect(() => {
+    if (items.length === 0) return;
+    if (repriceFromCatalog(items)) toast.warning(t('pos.toast.pricesUpdated'));
+  }, [items]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Leaving with an uncharged cart asks first. Nothing is lost if they go —
+     the cart is restored on return — but a sale left half-rung is usually a
+     mistake. A reload or closed tab gets the browser's own prompt. */
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      !cart.isEmpty && currentLocation.pathname !== nextLocation.pathname,
+  );
+
+  useEffect(() => {
+    if (cart.isEmpty) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [cart.isEmpty]);
 
   /* Keep focus in the scan field: a hardware scanner is a keyboard, and it types
      wherever the caret happens to be. */
@@ -332,6 +386,38 @@ export default function PosPage() {
       /* The server is the judge of an approval. When it refuses one, the
          discount goes back to waiting and the cashier is told why. */
       const code = saleResult.error instanceof HttpError ? saleResult.error.code : '';
+
+      /* The server prices the sale. A price that differs from the catalog
+         means this till's list is stale: reload it, bring the cart to the
+         new prices and let the cashier see the new total before charging. */
+      if (code === 'price_mismatch') {
+        payment.close();
+        const fresh = await safeCall(() => catalogService.posItems());
+        if (fresh.ok) {
+          setItems(fresh.data);
+          repriceFromCatalog(fresh.data);
+        }
+        toast.warning(t('pos.toast.pricesUpdated'), saleResult.error.message);
+        return false;
+      }
+
+      /* The discount no longer matches its rule (expired, out of scope, or
+         the basket changed): take it off rather than leave a number the
+         server will keep refusing. */
+      if (
+        code === 'discount_not_applicable' ||
+        code === 'discount_mismatch' ||
+        code === 'discount_needs_rule'
+      ) {
+        payment.close();
+        cart.setDiscount(0, null);
+        setApproval(NO_APPROVAL);
+        setApprovalBy(null);
+        setDiscountCapped(false);
+        toast.warning(t('pos.toast.discountRemoved'), saleResult.error.message);
+        return false;
+      }
+
       if (
         code === 'discount_approval_required' ||
         code === 'approver_not_allowed' ||
@@ -349,15 +435,25 @@ export default function PosPage() {
     const sale = saleResult.data;
     saleKey.current = null;
 
+    /* What the receipt needs is kept aside, and the cart emptied now: the
+       sale is recorded, and a cart left full would be restored (and could be
+       charged again) after leaving the page from the receipt. */
+    const soldLines = cart.lines;
+    const soldCustomerId = cart.customerId;
+    setCompletedDiscount(
+      discounts.find((entry) => entry.discount.id === cart.discountId)?.discount ?? null,
+    );
+    cart.clear();
+
     /* Discount usage is counted by the commit itself, from the discountId
        sent above — counting it here as well would double it. */
 
     /* Settling an existing balance is a separate collection, not part of the
        sale — it must land on the customer statement as its own line. */
-    if (result.settleH > 0 && cart.customerId) {
+    if (result.settleH > 0 && soldCustomerId) {
       await safeCall(() =>
         customerService.recordPayment({
-          customerId: cart.customerId!,
+          customerId: soldCustomerId,
           amountH: result.settleH,
           method: result.cardH > 0 ? 'card' : 'cash',
           note: `Settled with ${sale.invoiceNumber}`,
@@ -369,12 +465,12 @@ export default function PosPage() {
     /* Only lines flagged as needing preparation reach the kitchen board. The
        server raises the ticket inside the commit, so this only decides
        whether to tell the cashier it went. */
-    const sentLines = cart.lines.filter((line) => {
+    const sentLines = soldLines.filter((line) => {
       const item = items.find((candidate) => candidate.id === line.itemId);
       return item?.requiresPreparation === true;
     });
 
-    setCompletedLines(cart.lines);
+    setCompletedLines(soldLines);
     setCompletedSale(sale);
     setCompletedChangeH(result.changeH);
     setSentToKitchen(sentLines.length > 0);
@@ -478,18 +574,49 @@ export default function PosPage() {
     }
   }
 
-  function startNewSale() {
-    cart.clear();
+  function resetDiscountState() {
     setApproval(NO_APPROVAL);
     setApprovalBy(null);
     setApprovalError(null);
     setDiscountCapped(false);
+  }
+
+  function startNewSale() {
+    cart.clear();
+    resetDiscountState();
     setCompletedSale(null);
     setCompletedChangeH(0);
     setCompletedLines([]);
+    setCompletedDiscount(null);
     setSentToKitchen(false);
     payment.close();
     setSearch('');
+  }
+
+  /**
+   * Park the current cart and start a fresh one. Any discount approval is
+   * dropped: it was given for this moment, and is asked for again on resume.
+   */
+  function holdCurrent() {
+    if (cart.isEmpty) return;
+    const order = held.hold(cart.snapshot);
+    cart.clear();
+    resetDiscountState();
+    saleKey.current = null;
+    toast.success(t('pos.hold.held', { name: t('pos.hold.label', { number: order.number }) }));
+  }
+
+  /** Pick a parked cart up again; a cart in progress is parked first. */
+  function resumeHeld(id: string) {
+    if (!cart.isEmpty) holdCurrent();
+    const order = held.take(id);
+    heldList.close();
+    if (!order) return;
+    cart.replace(order.cart);
+    resetDiscountState();
+    saleKey.current = null;
+    if (items.length > 0 && repriceFromCatalog(items)) toast.warning(t('pos.toast.pricesUpdated'));
+    toast.success(t('pos.hold.resumed', { name: t('pos.hold.label', { number: order.number }) }));
   }
 
   /* Fills the shell exactly: header (3rem) plus page padding (1.5rem). No page
@@ -542,6 +669,9 @@ export default function PosPage() {
             onRequestApproval={requestApproval}
             discountCapped={discountCapped}
             checkoutBlocked={approval.state === 'pending'}
+            onHold={holdCurrent}
+            heldCount={held.orders.length}
+            onShowHeld={heldList.open}
           />
         </div>
       </div>
@@ -565,6 +695,25 @@ export default function PosPage() {
         onConfirm={handleCheckout}
       />
 
+      <HeldOrdersModal
+        open={heldList.isOpen}
+        onClose={heldList.close}
+        orders={held.orders}
+        onResume={resumeHeld}
+        onDiscard={held.discard}
+      />
+
+      <ConfirmModal
+        open={blocker.state === 'blocked'}
+        title={t('pos.leave.title')}
+        description={t('pos.leave.description')}
+        confirmLabel={t('pos.leave.leave')}
+        cancelLabel={t('pos.leave.stay')}
+        variant="warning"
+        onConfirm={() => blocker.proceed?.()}
+        onCancel={() => blocker.reset?.()}
+      />
+
       <ApprovalModal
         open={approving}
         onClose={() => setApproving(false)}
@@ -576,9 +725,7 @@ export default function PosPage() {
       <OrderComplete
         open={Boolean(completedSale)}
         sale={completedSale}
-        discount={
-          discounts.find((entry) => entry.discount.id === cart.discountId)?.discount ?? null
-        }
+        discount={completedDiscount}
         changeH={completedChangeH}
         sentToKitchen={sentToKitchen}
         printGroups={orderGroups}

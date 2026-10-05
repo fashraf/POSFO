@@ -14,7 +14,7 @@ import {
 import { cn } from '@/lib/cn';
 import { formatPercent, fromMinorUnits, toMinorUnits } from '@/lib/format';
 import { useI18n, useTranslation } from '@/i18n';
-import { isProduct } from '@/types/catalog';
+import { grossMarginOf, isProduct } from '@/types/catalog';
 import type { PrintGroup } from '@/types/printing';
 import type {
   CatalogItem,
@@ -215,8 +215,8 @@ export function CatalogItemForm({
   const margin = useMemo(() => {
     const priceH = toMinorUnits(form.price || '0');
     const costH = toMinorUnits(form.cost || '0');
-    if (priceH <= 0 || costH <= 0) return null;
-    return (priceH - costH) / priceH;
+    /* On the price excluding VAT, the same rule as the P&L. */
+    return grossMarginOf(priceH, costH);
   }, [form.price, form.cost]);
 
   const categoryOptions = useMemo(
@@ -230,6 +230,13 @@ export function CatalogItemForm({
   );
 
   async function handleSubmit() {
+    /* The field is marked required; say so before the round trip. The server
+       refuses it too (fieldErrors.sku), so this is a courtesy, not the rule. */
+    if (form.kind === 'product' && form.sku.trim() === '') {
+      setErrors({ sku: t('catalog.form.skuRequired') });
+      return;
+    }
+
     setSaving(true);
     setErrors({});
 
@@ -237,13 +244,18 @@ export function CatalogItemForm({
       const succeeded = await onSubmit(toInput(form));
       if (succeeded) onClose();
     } catch (error) {
-      const fieldErrors = (error as { fieldErrors?: Record<string, string[]> }).fieldErrors;
+      const failure = error as { fieldErrors?: Record<string, string[]>; message?: string };
+      const fieldErrors = failure.fieldErrors;
       if (fieldErrors) {
+        const entries = Object.entries(fieldErrors).filter(([, messages]) => messages.length > 0);
+        /* A single-field refusal: the top-level message is already in the
+           user's language, the field text is English only. */
         setErrors(
           Object.fromEntries(
-            Object.entries(fieldErrors)
-              .filter(([, messages]) => messages.length > 0)
-              .map(([field, messages]) => [field, messages[0]]),
+            entries.map(([field, messages]) => [
+              field,
+              entries.length === 1 && failure.message ? failure.message : messages[0],
+            ]),
           ),
         );
       }

@@ -458,6 +458,16 @@ export const apiCategoryService = {
     invalidate('catalog');
     return toCategory(updated);
   },
+
+  /**
+   * Through the activation route (catalog.activate), not the edit route. A
+   * refusal — live items still in the category — arrives as
+   * DeactivationBlocked carrying the server's message.
+   */
+  async setActive(id: string, isActive: boolean): Promise<void> {
+    await activationApi.set('category', id, isActive);
+    invalidate('catalog');
+  },
 };
 
 function toPrintGroup(row: ApiPrintGroup): PrintGroup {

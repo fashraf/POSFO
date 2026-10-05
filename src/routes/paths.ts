@@ -10,6 +10,7 @@ export const ROUTES = {
   catalog: '/catalog',
   inventory: '/inventory',
   restock: '/inventory/restock',
+  stocktake: '/inventory/stocktake',
   kitchen: '/kitchen',
   profile: '/profile',
   vendors: '/vendors',

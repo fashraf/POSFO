@@ -26,6 +26,16 @@ export interface CommitSalePayload {
   /** Needed only when the approver is someone other than the caller. */
   approverPassword?: string | null;
   orderType?: 'dine_in' | 'takeaway' | 'delivery' | 'other' | null;
+  /**
+   * The server prices the sale: line prices must equal the catalog and the
+   * invoice discount must be what discountId gives. Anything else is an
+   * override, accepted only with this reason and pos.override_price (the
+   * cashier, or approvedByUserId + approverPassword). Otherwise 422
+   * price_mismatch (fieldErrors.lines — reload prices), price_override_not_allowed,
+   * line_discount_not_allowed, discount_needs_rule, discount_not_applicable
+   * (fieldErrors.discountId) or discount_mismatch (fieldErrors.discountH).
+   */
+  overrideReason?: string | null;
   lines: {
     itemId: string;
     quantity: number;
@@ -71,12 +81,33 @@ export interface CommittedSale {
   invoiceNumber: string;
 }
 
+/**
+ * One window of GET /api/sales/analytics. Returns count in the window they
+ * were issued, and every figure is net of them.
+ */
+export interface AnalyticsPeriod {
+  /** Invoices including VAT, less refunds on credit notes. */
+  salesH: number;
+  grossSalesH: number;
+  returnsH: number;
+  transactions: number;
+  averageH: number;
+  /** Sales excluding VAT, less returns excluding VAT. */
+  netRevenueH: number;
+  /** Cost of the goods and services sold, less the cost of what came back. */
+  cogsH: number;
+  /** netRevenueH − cogsH: the same rule as the P&L. */
+  grossProfitH: number;
+  /** grossProfitH ÷ netRevenueH; null with no revenue. */
+  grossMargin: number | null;
+}
+
 export const salesApi = {
   /** Dashboard figures, aggregated server-side. */
   analytics(query: { branchId?: string | null; days?: number } = {}) {
     return api.get<{
-      current: { salesH: number; transactions: number; averageH: number; grossProfitH: number };
-      previous: { salesH: number; transactions: number; averageH: number; grossProfitH: number };
+      current: AnalyticsPeriod;
+      previous: AnalyticsPeriod;
       daily: { date: string; salesH: number }[];
       byMethod: { method: string; amountH: number }[];
       topItems: { itemId: string; nameAr: string; nameEn: string;
@@ -88,15 +119,29 @@ export const salesApi = {
     return api.post<CommittedSale>('/api/sales', payload);
   },
 
+  /**
+   * Sale headers, newest first. `status` and `method` are filtered on the
+   * server, so `totalCount` and `summary` describe the filtered set (method:
+   * a sale that used it at all; `mixed` for sales paid more than one way).
+   * 422 bad_status / bad_method for anything else.
+   */
   list(query: {
     branchId?: string | null;
     search?: string;
     from?: string;
     to?: string;
+    status?: string;
+    method?: string;
     page?: number;
     pageSize?: number;
   } = {}) {
-    return api.get<ApiPage<Record<string, unknown>>>('/api/sales', {
+    return api.get<
+      ApiPage<Record<string, unknown>> & {
+        /** Over the whole filtered set: not-voided total net of refunds, the
+            refunds, the not-voided count, and returned sales. */
+        summary?: { netH: number; returnsH: number; invoices: number; returned: number };
+      }
+    >('/api/sales', {
       query: { ...query, branchId: query.branchId ?? undefined },
     });
   },
@@ -158,8 +203,11 @@ export const customerApi = {
     vatNumber?: string | null;
     customerType: string;
     creditLimitH: number;
+    /** Owed before the system; posted Dr 1400 / Cr 3900 and shown on the statement. */
+    openingBalanceH?: number;
+    branchId?: string | null;
   }) {
-    return api.post<{ customerId: string }>('/api/customers', payload);
+    return api.post<{ customerId: string; openingEntryId: string | null }>('/api/customers', payload);
   },
 
   /** Returns the stored customer row, same shape as GET /api/customers/{id}. */
@@ -213,7 +261,16 @@ export interface FinanceFigures {
   revenueH: number;
   /** What returns took off revenue this month. */
   returnsH: number;
+  /** Cost of goods and services sold: goodsCostH + serviceCostH. */
   cogsH: number;
+  /** Stocked goods, as posted to 5100. */
+  goodsCostH: number;
+  /** Services and untracked items, from the sale lines (not in the ledger). */
+  serviceCostH: number;
+  /** revenueH − cogsH. The one gross-profit rule, shared with the dashboard. */
+  grossProfitH: number;
+  /** grossProfitH ÷ revenueH; null with no revenue. */
+  grossMargin: number | null;
   expensesH: number;
   /** Operating expenses split by account (5200/6000/6100/6200/6300). */
   expensesByAccount: {

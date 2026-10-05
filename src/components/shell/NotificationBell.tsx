@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, Bell, CheckCheck, Info, PackageOpen, Wallet } from 'lucide-react';
+import {
+  AlertTriangle,
+  Banknote,
+  Bell,
+  CalendarClock,
+  CheckCheck,
+  Info,
+  PackageOpen,
+  Wallet,
+} from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { useOnClickOutside } from '@/hooks/useOnClickOutside';
 import { useTranslation } from '@/i18n';
@@ -11,6 +20,8 @@ import type { TranslationKey } from '@/i18n';
 const ICONS: Record<NotificationKind, typeof Info> = {
   low_stock: PackageOpen,
   credit_limit: Wallet,
+  recurring_due: CalendarClock,
+  cash_drawer: Banknote,
   kitchen_delay: AlertTriangle,
   shift: Info,
   system: Info,
@@ -47,9 +58,17 @@ export function NotificationBell() {
     if (result.ok) setItems(result.data);
   }, []);
 
+  /* The server works the alerts out from live stock, payments and drawers,
+     so the bell asks again every minute, and whenever it is opened. */
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => void load(), 60_000);
+    return () => window.clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    if (open) void load();
+  }, [open, load]);
 
   const unread = items.filter((item) => !item.read).length;
 

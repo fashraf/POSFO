@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Receipt, RotateCcw, TrendingUp } from 'lucide-react';
 import {
@@ -23,6 +23,7 @@ import {
 } from '@/components/ui';
 import { SaleDetail } from '@/features/sales/SaleDetail';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
+import { useSearchParamSeed } from '@/hooks/useSearchParamSeed';
 import { useDisclosure } from '@/hooks/useDisclosure';
 import { useSession } from '@/contexts/SessionContext';
 import { useToast } from '@/contexts/ToastContext';
@@ -38,8 +39,10 @@ import type {
   PaymentMethod,
   ReturnReason,
   Sale,
+  SalePaymentKind,
   SaleStatus,
 } from '@/types/sales';
+import type { SalesListSummary } from '@/services/salesService';
 
 const PAGE_SIZE = 10;
 
@@ -62,6 +65,12 @@ export default function SalesPage() {
   const [sales, setSales] = useState<Sale[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [total, setTotal] = useState(0);
+  const [summary, setSummary] = useState<SalesListSummary>({
+    netH: 0,
+    returnsH: 0,
+    invoices: 0,
+    returned: 0,
+  });
   const [loading, setLoading] = useState(true);
 
   /* Reloads when a save elsewhere changes what this page shows.
@@ -71,8 +80,10 @@ export default function SalesPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
+  /* The header search opens this page with ?q=<invoice number>. */
+  useSearchParamSeed(setSearch);
   const [status, setStatus] = useState<SaleStatus | 'all'>('all');
-  const [method, setMethod] = useState<PaymentMethod | 'all'>('all');
+  const [method, setMethod] = useState<SalePaymentKind | 'all'>('all');
   const [page, setPage] = useState(1);
   const debouncedSearch = useDebouncedValue(search, 300);
 
@@ -93,6 +104,8 @@ export default function SalesPage() {
         pageSize: PAGE_SIZE,
         search: debouncedSearch,
         branchId: activeBranch?.id ?? null,
+        status: status === 'all' ? null : status,
+        method: method === 'all' ? null : method,
       })),
       safeCall(() => customerService.list()),
     ]);
@@ -100,15 +113,17 @@ export default function SalesPage() {
     if (saleResult.ok) {
       setSales(saleResult.data.items);
       setTotal(saleResult.data.total);
+      setSummary(saleResult.data.summary);
     } else {
       setError(saleResult.error.message);
       setSales([]);
       setTotal(0);
+      setSummary({ netH: 0, returnsH: 0, invoices: 0, returned: 0 });
     }
 
     if (customerResult.ok) setCustomers(customerResult.data);
     setLoading(false);
-  }, [page, debouncedSearch, activeBranch]);
+  }, [page, debouncedSearch, activeBranch, status, method]);
 
   useEffect(() => {
     void load();
@@ -118,34 +133,12 @@ export default function SalesPage() {
     setPage(1);
   }, [debouncedSearch, status, method]);
 
-  /* Status and method are narrowed on the loaded page: the list route filters
-     by branch, text and date only. */
-  const visible = useMemo(
-    () =>
-      sales.filter((sale) => {
-        if (status !== 'all' && sale.status !== status) return false;
-        if (method !== 'all' && !sale.payments.some((payment) => payment.method === method)) {
-          return false;
-        }
-        return true;
-      }),
-    [sales, status, method],
-  );
+  /* Status and method are filtered by the server, so the rows, the page
+     count and the figures above all describe the same filtered set. Net
+     sales is net of returns (summary.netH already has the refunds off). */
+  const visible = sales;
 
-  const summary = useMemo(() => {
-    const live = sales.filter((sale) => sale.status !== 'voided');
-    const netH = live.reduce((sum, sale) => sum + sale.totalH, 0);
-    const returned = sales.filter(
-      (sale) => sale.status === 'returned' || sale.status === 'partially_returned',
-    ).length;
-
-    return {
-      netH,
-      invoices: live.length,
-      averageH: live.length === 0 ? 0 : Math.round(netH / live.length),
-      returned,
-    };
-  }, [sales]);
+  const averageH = summary.invoices === 0 ? 0 : Math.round(summary.netH / summary.invoices);
 
   const customerName = (id: string | null) => {
     if (!id) return t('pos.cart.walkIn');
@@ -246,7 +239,7 @@ export default function SalesPage() {
         />
         <KpiCard
           label={t('sales.summary.averageSale')}
-          value={<CurrencyDisplay amount={summary.averageH} />}
+          value={<CurrencyDisplay amount={averageH} />}
         />
         <KpiCard
           label={t('sales.summary.returned')}
@@ -281,12 +274,14 @@ export default function SalesPage() {
           <Select
             className="sm:max-w-[11rem]"
             value={method}
-            onChange={(value) => setMethod(value as PaymentMethod | 'all')}
+            onChange={(value) => setMethod(value as SalePaymentKind | 'all')}
             options={[
               { value: 'all', label: t('sales.filters.allMethods') },
               { value: 'cash', label: t('pos.payment.cash') },
               { value: 'card', label: t('pos.payment.card') },
               { value: 'credit', label: t('pos.payment.credit') },
+              { value: 'bank', label: t('pos.payment.bank') },
+              { value: 'mixed', label: t('pos.payment.mixed') },
             ]}
           />
         </div>
@@ -347,13 +342,10 @@ export default function SalesPage() {
                     </TableCell>
                     <TableCell className="text-ink-600">{customerName(sale.customerId)}</TableCell>
                     <TableCell numeric className="text-ink-600">
-                      {formatNumber(
-                        sale.lines.reduce((sum, line) => sum + line.quantity, 0),
-                        { language },
-                      )}
+                      {formatNumber(sale.itemCount, { language })}
                     </TableCell>
                     <TableCell className="text-ink-600">
-                      {t(`pos.payment.${sale.payments[0]?.method ?? 'cash'}`)}
+                      {t(`pos.payment.${sale.paymentMethod ?? 'unknown'}`)}
                     </TableCell>
                     <TableCell numeric className="text-ink-500">
                       <CurrencyDisplay amount={sale.taxH} />

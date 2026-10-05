@@ -3,6 +3,8 @@ import type { ID, Timestamped } from './common';
 export type NotificationKind =
   | 'low_stock'
   | 'credit_limit'
+  | 'recurring_due'
+  | 'cash_drawer'
   | 'kitchen_delay'
   | 'shift'
   | 'system';

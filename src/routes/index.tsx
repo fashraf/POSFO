@@ -19,6 +19,7 @@ const CustomersPage = lazy(() => import('@/pages/CustomersPage'));
 const InventoryPage = lazy(() => import('@/pages/InventoryPage'));
 const VendorsPage = lazy(() => import('@/pages/VendorsPage'));
 const RestockPage = lazy(() => import('@/pages/inventory/RestockPage'));
+const StocktakePage = lazy(() => import('@/pages/inventory/StocktakePage'));
 const KitchenPage = lazy(() => import('@/pages/KitchenPage'));
 const ProfilePage = lazy(() => import('@/pages/ProfilePage'));
 const CompanyProfilePage = lazy(() => import('@/pages/company/CompanyProfilePage'));
@@ -102,6 +103,7 @@ export const router = createBrowserRouter([
           { path: ROUTES.inventory.slice(1), element: <Page><InventoryPage /></Page> },
           { path: ROUTES.vendors.slice(1), element: <Page><VendorsPage /></Page> },
           { path: 'inventory/restock', element: <Page><RestockPage /></Page> },
+          { path: ROUTES.stocktake.slice(1), element: <Page><StocktakePage /></Page> },
           { path: ROUTES.kitchen.slice(1), element: <Page><KitchenPage /></Page> },
           { path: ROUTES.profile.slice(1), element: <Page><ProfilePage /></Page> },
           { path: ROUTES.company.slice(1), element: <Page><CompanyProfilePage /></Page> },

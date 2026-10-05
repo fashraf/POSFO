@@ -66,15 +66,33 @@ export default function KitchenPage() {
      fetching them; every other filter works on what is already loaded. */
   const showCompleted = statusFilter === 'completed';
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const result = await safeCall(() => kitchenService.list({ includeCompleted: showCompleted }));
-    if (result.ok) setOrders(result.data);
-    setLoading(false);
-  }, [showCompleted]);
+  /* `silent` refreshes without the skeleton: after an action, and on the
+     timer below, the board should update in place rather than flash. */
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      const result = await safeCall(() => kitchenService.list({ includeCompleted: showCompleted }));
+      if (result.ok) {
+        setOrders(result.data);
+        /* Keep the open dialog on the latest copy of its order. */
+        setSelected((current) =>
+          current ? (result.data.find((order) => order.id === current.id) ?? current) : null,
+        );
+      }
+      if (!silent) setLoading(false);
+    },
+    [showCompleted],
+  );
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  /* A kitchen screen is left open all shift: new tickets arrive from the
+     till, so the board refreshes itself rather than waiting for a click. */
+  useEffect(() => {
+    const timer = window.setInterval(() => void load(true), 15_000);
+    return () => window.clearInterval(timer);
   }, [load]);
 
   const nameOf = <T extends { nameAr: string; nameEn: string }>(record: T) =>
@@ -114,21 +132,34 @@ export default function KitchenPage() {
     });
   }, [orders, search, statusFilter, timeFilter, typeFilter, now]);
 
-  async function applyStatus(status: KitchenOrderStatus) {
-    if (!selected) return;
-    setBusy(true);
+  /*
+   * The handlers below are stable (useCallback on the order id, not the
+   * order object). The board re-renders every second for its clock; inline
+   * handlers were new on every tick, which re-ran the dialog's focus effect
+   * each second and pulled focus back to the order dialog — underneath the
+   * confirmation it had just opened.
+   */
+  const selectedId = selected?.id ?? null;
 
-    const result = await safeCall(() => kitchenService.setStatus(selected.id, status));
-    if (result.ok) {
-      toast.success(t('kitchen.toast.updated'));
-      setSelected(result.data);
-      await load();
-    } else {
-      toast.error(t('kitchen.toast.failed'), result.error.message);
-    }
+  const applyStatus = useCallback(
+    async (status: KitchenOrderStatus) => {
+      if (!selectedId) return;
+      setBusy(true);
 
-    setBusy(false);
-  }
+      const result = await safeCall(() => kitchenService.setStatus(selectedId, status));
+      if (result.ok) {
+        toast.success(t('kitchen.toast.updated'));
+        setSelected(result.data);
+      } else {
+        toast.error(t('kitchen.toast.failed'), result.error.message);
+      }
+
+      /* Refreshed either way: on failure the board shows what the server has. */
+      await load(true);
+      setBusy(false);
+    },
+    [selectedId, load, toast, t],
+  );
 
   async function toggleItem(itemId: string) {
     if (!selected) return;
@@ -146,28 +177,36 @@ export default function KitchenPage() {
       setOrders((current) =>
         current.map((candidate) => (candidate.id === result.data.id ? result.data : candidate)),
       );
+    } else {
+      toast.error(t('kitchen.toast.failed'), result.error.message);
     }
   }
 
-  async function completeAllItems() {
+  /* Every line done is the order ready: one request, which marks the lines
+     on the server as well. */
+  const completeAllItems = useCallback(async () => {
     if (!selected) return;
     setBusy(true);
 
-    /* Sequential rather than parallel: the service returns the whole order
-       each time, so racing them would let an earlier result overwrite a
-       later one. */
-    for (const item of selected.items) {
-      if (item.completedQuantity >= item.quantity) continue;
-      const result = await safeCall(() =>
-        kitchenService.setItemProgress(selected.id, item.id, item.quantity),
-      );
-      if (result.ok) setSelected(result.data);
+    const result = await safeCall(() => kitchenService.completeAll(selected));
+    if (result.ok) {
+      setSelected(result.data);
+      toast.success(t('kitchen.toast.updated'));
+    } else {
+      toast.error(t('kitchen.toast.failed'), result.error.message);
     }
 
-    await load();
+    await load(true);
     setBusy(false);
-    toast.success(t('kitchen.toast.updated'));
-  }
+  }, [selected, load, toast, t]);
+
+  const closeOrder = useCallback(() => setSelected(null), []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- toggleItem reads `selected`
+  const toggle = useCallback((itemId: string) => void toggleItem(itemId), [selected]);
+  const printTicket = useCallback(() => {
+    toast.info(t('kitchen.toast.printing'));
+    window.print();
+  }, [toast, t]);
 
   return (
     <div className="flex h-[calc(100svh-4.5rem)] min-h-[32rem] flex-col gap-2">
@@ -381,14 +420,11 @@ export default function KitchenPage() {
       <KitchenOrderModal
         order={selected}
         open={Boolean(selected)}
-        onClose={() => setSelected(null)}
-        onToggleItem={(itemId) => void toggleItem(itemId)}
+        onClose={closeOrder}
+        onToggleItem={toggle}
         onCompleteAll={completeAllItems}
         onSetStatus={applyStatus}
-        onPrint={() => {
-          toast.info(t('kitchen.toast.printing'));
-          window.print();
-        }}
+        onPrint={printTicket}
         busy={busy}
       />
     </div>

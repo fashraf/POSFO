@@ -48,7 +48,8 @@ export function OrderComplete({
   const nameOf = <T extends { nameAr: string; nameEn: string }>(record: T) =>
     language === 'ar' ? record.nameAr : record.nameEn;
 
-  const method = sale.payments[0]?.method ?? 'cash';
+  /* The sale's own word for how it was paid — mixed when split. */
+  const method = sale.paymentMethod ?? 'unknown';
 
   return (
     <Modal open={open} onClose={onNewSale} size="sm" dismissible={false}>
@@ -89,7 +90,7 @@ export function OrderComplete({
 
           <div className="flex items-center justify-between border-t border-dashed border-ink-200 pt-1.5">
             <dt className="text-ink-500">{t('checkout.done.payment')}</dt>
-            <dd className="font-medium text-ink-800">{t(`checkout.payment.${method}`)}</dd>
+            <dd className="font-medium text-ink-800">{t(`pos.payment.${method}`)}</dd>
           </div>
 
           {/* Change is what the cashier does next, so it gets the emphasis. */}

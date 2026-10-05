@@ -129,8 +129,13 @@ export default function ProfitLossPage() {
     const returnsH = summary?.returnsH ?? 0;
     const netRevenueH = summary?.revenueH ?? 0;
     const salesH = netRevenueH + returnsH;
+    /* Gross profit is the server's: net revenue (ex VAT, after returns) less
+       the cost of the goods AND services sold — the same rule the dashboard
+       uses. Services' cost is not in the ledger, so it arrives on its own. */
     const cogsH = summary?.cogsH ?? 0;
-    const grossProfitH = netRevenueH - cogsH;
+    const goodsCostH = summary?.goodsCostH ?? cogsH;
+    const serviceCostH = summary?.serviceCostH ?? 0;
+    const grossProfitH = summary?.grossProfitH ?? netRevenueH - cogsH;
 
     const operatingH = summary?.expensesH ?? 0;
     /* Each expense account with movement this month. */
@@ -144,10 +149,12 @@ export default function ProfitLossPage() {
       netRevenueH,
       operatingLines,
       cogsH,
+      goodsCostH,
+      serviceCostH,
       grossProfitH,
       operatingH,
       netProfitH: grossProfitH - operatingH,
-      grossMargin: netRevenueH > 0 ? grossProfitH / netRevenueH : null,
+      grossMargin: summary?.grossMargin ?? (netRevenueH > 0 ? grossProfitH / netRevenueH : null),
       netMargin: netRevenueH > 0 ? (grossProfitH - operatingH) / netRevenueH : null,
       hasActivity: salesH !== 0 || cogsH !== 0 || operatingH !== 0,
     };
@@ -208,7 +215,14 @@ export default function ProfitLossPage() {
               />
 
               <StatementSection label={t('pnl.cogs')} />
-              <StatementRow label={t('pnl.cogs')} amountH={-statement.cogsH} negative />
+              {statement.serviceCostH !== 0 ? (
+                <>
+                  <StatementRow label={t('pnl.goodsCost')} amountH={-statement.goodsCostH} negative />
+                  <StatementRow label={t('pnl.serviceCost')} amountH={-statement.serviceCostH} negative />
+                </>
+              ) : (
+                <StatementRow label={t('pnl.cogs')} amountH={-statement.cogsH} negative />
+              )}
               <StatementRow
                 label={t('pnl.grossProfit')}
                 amountH={statement.grossProfitH}

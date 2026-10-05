@@ -1,6 +1,7 @@
 import type { ID } from '@/types';
 import { utc } from './time';
-import type { Sale, SaleLine, SalePayment, SaleStatus, PaymentMethod } from '@/types/sales';
+import type { Sale, SaleLine, SalePayment, SaleStatus, PaymentMethod, SalePaymentKind } from '@/types/sales';
+import { paymentKindOf } from '@/types/sales';
 
 /**
  * API rows to domain objects.
@@ -91,9 +92,20 @@ export function toSalePayment(row: Row): SalePayment {
  * rather than undefined, so a caller that reads `lines[0]` gets undefined
  * instead of throwing.
  */
+const PAYMENT_KINDS: SalePaymentKind[] = ['cash', 'card', 'credit', 'bank', 'mixed'];
+
 export function toSale(row: Row, lines: Row[] = [], payments: Row[] = []): Sale {
   const totalH = num(pick(row, 'totalH'));
   const tenderedH = numOrNull(pick(row, 'tenderedH'));
+  const mappedLines = lines.map(toSaleLine);
+  const mappedPayments = payments.map(toSalePayment);
+
+  /* The server's word for how it was paid (the list has no payment rows);
+     else worked out from the payments; else unknown — not cash. */
+  const serverKind = str(pick(row, 'paymentMethod')) as SalePaymentKind;
+  const paymentMethod = PAYMENT_KINDS.includes(serverKind)
+    ? serverKind
+    : paymentKindOf(mappedPayments);
 
   return {
     id: str(pick(row, 'saleId') ?? pick(row, 'id')),
@@ -113,8 +125,13 @@ export function toSale(row: Row, lines: Row[] = [], payments: Row[] = []): Sale 
     status: str(pick(row, 'status'), 'completed') as SaleStatus,
     soldAt: iso(pick(row, 'soldAt') ?? pick(row, 'soldAtUtc')),
 
-    lines: lines.map(toSaleLine),
-    payments: payments.map(toSalePayment),
+    lines: mappedLines,
+    payments: mappedPayments,
+    paymentMethod,
+    itemCount: num(
+      pick(row, 'itemCount'),
+      mappedLines.reduce((sum, line) => sum + line.quantity, 0),
+    ),
 
     createdAt: iso(pick(row, 'createdAtUtc') ?? pick(row, 'soldAtUtc')),
     updatedAt: iso(pick(row, 'updatedAtUtc') ?? pick(row, 'soldAtUtc')),
@@ -254,6 +271,8 @@ export function toDrawerSession(row: Row): import('@/types/finance').DrawerSessi
     closedAt: pick(row, 'closedAtUtc') ? iso(pick(row, 'closedAtUtc')) : null,
     openingCashH: num(pick(row, 'openingCashH')),
     countedCashH: numOrNull(pick(row, 'countedCashH')),
+    expectedCashH: numOrNull(pick(row, 'expectedCashH')),
+    varianceH: numOrNull(pick(row, 'varianceH')),
     openedBy: str(pick(row, 'openedBy'), 'System'),
     closedBy: strOrNull(pick(row, 'closedBy')),
     note: str(pick(row, 'note')),

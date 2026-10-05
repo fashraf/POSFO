@@ -67,7 +67,12 @@ export default function ReceivablesPage() {
         const statement = await safeCall(() => customerService.statement(customer.id));
         const firstUnsettled =
           statement.ok && statement.data.length > 0
-            ? (statement.data.find((entry) => entry.kind === 'credit_sale')?.date ?? null)
+            ? (statement.data.find(
+                (entry) =>
+                  entry.kind === 'credit_sale' ||
+                  entry.kind === 'opening_balance' ||
+                  entry.kind === 'balance_forward',
+              )?.date ?? null)
             : null;
 
         const oldestIso = firstUnsettled ?? customer.updatedAt;

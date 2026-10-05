@@ -22,6 +22,7 @@ import type { Alignment, BillLanguage, BillTemplate, PaperSize } from '@/types/c
 import type { BillAudience, CompanyProfile } from '@/types/company';
 import { DEFAULT_BILL_TEMPLATE } from '@/types/company';
 import type { PrintGroup } from '@/types/printing';
+import { TAX_INVOICE_REQUIRED_FIELDS, withTaxInvoiceFields } from '@/types/printing';
 import { Input } from '@/components/ui';
 
 type TabValue = 'paper' | 'header' | 'body' | 'totals' | 'footer';
@@ -53,7 +54,9 @@ export default function BillBuilderPage({ mode }: { mode: 'create' | 'edit' }) {
 
     if (mode === 'edit' && id) {
       const result = await safeCall(() => billTemplateService.get(id));
-      if (result.ok) setTemplate(result.data);
+      /* An older customer template saved with a tax field off opens with it
+         on — that is how it prints, and the server will not save it off. */
+      if (result.ok) setTemplate(withTaxInvoiceFields(result.data));
     } else {
       const stamp = new Date().toISOString();
       setTemplate({
@@ -74,7 +77,8 @@ export default function BillBuilderPage({ mode }: { mode: 'create' | 'edit' }) {
   }, [load]);
 
   function set<K extends keyof BillTemplate>(key: K, value: BillTemplate[K]) {
-    setTemplate((current) => (current ? { ...current, [key]: value } : current));
+    /* Switching to the customer audience turns the tax-invoice fields back on. */
+    setTemplate((current) => (current ? withTaxInvoiceFields({ ...current, [key]: value }) : current));
   }
 
   async function save() {
@@ -100,17 +104,30 @@ export default function BillBuilderPage({ mode }: { mode: 'create' | 'edit' }) {
 
   if (loading || !template || !company) return <LoadingState className="py-20" />;
 
+  /*
+   * On a customer receipt the VAT number, VAT line and QR code are what make
+   * it a simplified tax invoice (ZATCA), so they are shown on and locked, with
+   * the reason. Group tickets are not invoices and keep the switch.
+   */
+  const isLocked = (key: keyof BillTemplate) =>
+    template.audience === 'customer' &&
+    (TAX_INVOICE_REQUIRED_FIELDS as readonly string[]).includes(key);
+
   /** A labelled on/off row — the builder is mostly these. */
-  const toggle = (key: keyof BillTemplate, label: string, description?: string) => (
-    <div className="rounded-md border border-ink-200 px-3 py-2">
-      <Switch
-        checked={Boolean(template[key])}
-        onCheckedChange={(checked) => set(key, checked as never)}
-        label={label}
-        description={description}
-      />
-    </div>
-  );
+  const toggle = (key: keyof BillTemplate, label: string, description?: string) => {
+    const locked = isLocked(key);
+    return (
+      <div className="rounded-md border border-ink-200 px-3 py-2">
+        <Switch
+          checked={locked || Boolean(template[key])}
+          disabled={locked}
+          onCheckedChange={(checked) => set(key, checked as never)}
+          label={label}
+          description={locked ? t('bill.taxInvoiceLocked') : description}
+        />
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-4">

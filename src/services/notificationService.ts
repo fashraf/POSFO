@@ -18,7 +18,15 @@ import { str } from './mappers/saleMappers';
 
 type Row = Record<string, unknown>;
 
-const KINDS: NotificationKind[] = ['low_stock', 'credit_limit', 'kitchen_delay', 'shift', 'system'];
+const KINDS: NotificationKind[] = [
+  'low_stock',
+  'credit_limit',
+  'recurring_due',
+  'cash_drawer',
+  'kitchen_delay',
+  'shift',
+  'system',
+];
 const SEVERITIES: NotificationSeverity[] = ['info', 'warning', 'danger', 'success'];
 
 /*
